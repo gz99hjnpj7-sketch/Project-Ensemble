@@ -1,6 +1,6 @@
-# Future News
+# Project Ensemble: Future News
 
-Future News is a multi-market forecast intelligence terminal. This MVP ships one connector, Polymarket, while keeping the schema, ingestion path, scoring, and UI source-aware for future Kalshi and Manifold connectors.
+Project Ensemble is a multi-market forecast intelligence terminal. This MVP ships one connector, Polymarket, while keeping the schema, ingestion path, scoring, and UI source-aware for future Kalshi and Manifold connectors.
 
 ## Stack
 

@@ -46,20 +46,41 @@ export class PolymarketConnector implements MarketConnector {
 
   private gammaUrl = process.env.POLYMARKET_GAMMA_URL ?? DEFAULT_GAMMA_URL;
   private clobUrl = process.env.POLYMARKET_CLOB_URL ?? DEFAULT_CLOB_URL;
-  private marketLimit = Number(process.env.INGEST_MARKET_LIMIT ?? 80);
+  private marketLimit = Number(process.env.INGEST_MARKET_LIMIT ?? 300);
+  private minLiquidity = Number(process.env.MIN_LIQUIDITY ?? 10_000);
 
   async fetchMarkets(): Promise<NormalizedMarketInput[]> {
-    const markets = await this.fetchGammaMarkets();
-    const normalized = await Promise.all(markets.map((market) => this.normalizeMarket(market)));
+    // Fetch with two strategies to get both high-volume and other relevant/liquid markets
+    const [byVolume, byLiquidity] = await Promise.all([
+      this.fetchGammaMarkets("volumeNum"),
+      this.fetchGammaMarkets("liquidityNum")
+    ]);
+    // Dedupe by source id
+    const all = [...byVolume, ...byLiquidity];
+    const seen = new Set<string>();
+    const unique = all.filter((m) => {
+      const id = String(m.conditionId ?? m.id ?? "");
+      if (seen.has(id)) return false;
+      seen.add(id);
+      return true;
+    });
+
+    // Filter for reasonably liquid markets to reduce noise and irrelevant low-quality ones
+    const liquidMarkets = unique.filter((m) => {
+      const liq = toNumber(m.liquidityNum ?? m.liquidity) ?? 0;
+      const vol = toNumber(m.volumeNum ?? m.volume) ?? 0;
+      return liq >= this.minLiquidity || vol >= 100_000;
+    });
+    const normalized = await Promise.all(liquidMarkets.map((market) => this.normalizeMarket(market)));
     return normalized.filter((market): market is NormalizedMarketInput => Boolean(market));
   }
 
-  private async fetchGammaMarkets(): Promise<GammaMarket[]> {
+  private async fetchGammaMarkets(order: "volumeNum" | "liquidityNum" = "volumeNum"): Promise<GammaMarket[]> {
     const url = new URL("/markets", this.gammaUrl);
     url.searchParams.set("limit", String(this.marketLimit));
     url.searchParams.set("active", "true");
     url.searchParams.set("closed", "false");
-    url.searchParams.set("order", "volumeNum");
+    url.searchParams.set("order", order);
     url.searchParams.set("ascending", "false");
 
     const response = await fetch(url);

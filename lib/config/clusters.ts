@@ -21,8 +21,15 @@ export const seedClusters: SeedCluster[] = [
     description: "Major markets about the next US presidential race.",
     match: {
       sourcePlatform: SourcePlatform.POLYMARKET,
-      includeAny: ["2028 us presidential election", "2028 presidential election", "win the 2028 us presidential election"],
-      excludeAny: ["approval rating", "nomination", "nominee", "primary"]
+      includeAny: [
+        "presidential election winner 2028",
+        "democratic presidential nominee",
+        "republican presidential nominee",
+        "presidential nominee 2028",
+        "2028 presidential election",
+        "election winner 2028"
+      ],
+      excludeAny: ["approval rating", "primary"]
     }
   },
   {
@@ -32,7 +39,7 @@ export const seedClusters: SeedCluster[] = [
     description: "Markets about Senate, House, and congressional control.",
     match: {
       sourcePlatform: SourcePlatform.POLYMARKET,
-      includeAny: ["senate", "house", "congress", "congressional"]
+      includeAny: ["senate", "house", "congress", "congressional", "control the house", "control the senate"]
     }
   },
   {
@@ -42,7 +49,7 @@ export const seedClusters: SeedCluster[] = [
     description: "Markets about Federal Reserve rate decisions and rate cuts.",
     match: {
       sourcePlatform: SourcePlatform.POLYMARKET,
-      includeAny: ["fed", "federal reserve", "rate cut", "interest rate", "fomc"]
+      includeAny: ["fed", "federal reserve", "rate cut", "interest rate", "fomc", "will the fed", "fed rate"]
     }
   },
   {
@@ -52,7 +59,7 @@ export const seedClusters: SeedCluster[] = [
     description: "Markets about inflation releases and CPI outcomes.",
     match: {
       sourcePlatform: SourcePlatform.POLYMARKET,
-      includeAny: ["inflation", "cpi", "consumer price"]
+      includeAny: ["inflation", "cpi", "consumer price", "inflation rate", "core cpi"]
     }
   },
   {
@@ -62,7 +69,7 @@ export const seedClusters: SeedCluster[] = [
     description: "Markets about recession, GDP contraction, and labor market stress.",
     match: {
       sourcePlatform: SourcePlatform.POLYMARKET,
-      includeAny: ["recession", "gdp", "unemployment", "jobs report"]
+      includeAny: ["recession", "gdp", "unemployment", "jobs report", "recession odds", "gdp growth"]
     }
   }
 ];
