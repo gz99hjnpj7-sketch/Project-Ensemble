@@ -19,16 +19,40 @@ export type CompositeResult = {
 
 export function computeCompositeForecast(inputs: CompositeInput[]): CompositeResult {
   const usable = inputs.filter((input) => input.probability !== null);
+  if (usable.length === 0) {
+    return {
+      compositeProbability: null,
+      qualityScore: 0,
+      confidence: SignalConfidence.LOW,
+      sourceBreakdown: []
+    };
+  }
+
   const weighted = usable.map((input) => {
     const manualWeight = input.weightOverride ?? 1;
     const weight = Math.max(input.qualityScore / 100, 0.05) * Math.max(input.recencyScore / 100, 0.05) * manualWeight;
     return { ...input, weight };
   });
   const totalWeight = weighted.reduce((sum, input) => sum + input.weight, 0);
-  const compositeProbability =
-    totalWeight > 0
-      ? weighted.reduce((sum, input) => sum + (input.probability ?? 0) * input.weight, 0) / totalWeight
-      : null;
+
+  // === CONDITIONAL AGGREGATION (Math fix for user trust) ===
+  // Detect mutually exclusive election-style markets (many "Will X win/nominee" for same race)
+  const isMutuallyExclusive = usable.length > 3 &&
+    usable.some(i => /win the|nominee|nomination|presidential election/i.test(i.question));
+
+  let compositeProbability: number | null;
+  if (isMutuallyExclusive) {
+    // For winner/nominee races: use the frontrunner's (highest) probability
+    // (instead of averaging 60+ long-shots down to ~1%)
+    compositeProbability = Math.max(...usable.map(i => i.probability ?? 0));
+  } else {
+    // Binary / independent macro events: volume/quality weighted average
+    compositeProbability =
+      totalWeight > 0
+        ? weighted.reduce((sum, input) => sum + (input.probability ?? 0) * input.weight, 0) / totalWeight
+        : null;
+  }
+
   const qualityScore = weighted.length
     ? Math.round(weighted.reduce((sum, input) => sum + input.qualityScore * input.weight, 0) / totalWeight)
     : 0;

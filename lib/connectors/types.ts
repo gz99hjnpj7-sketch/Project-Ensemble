@@ -28,6 +28,8 @@ export type NormalizedMarketInput = {
   sourceUrl?: string | null;
   lastUpdated: Date;
   rawPayload: unknown;
+  // Populated for semantic embeddings (replaces keyword matching)
+  embedding?: number[];
 };
 
 export type MarketConnector = {

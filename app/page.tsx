@@ -2,6 +2,7 @@ import { Suspense } from "react";
 import Link from "next/link";
 import { AlertTriangle, Search } from "lucide-react";
 import { getForecastList } from "@/lib/forecast/read-models";
+import { formatTimestamp } from "@/lib/utils/date";
 
 type SearchParams = Promise<Record<string, string | string[] | undefined>>;
 
@@ -47,7 +48,7 @@ export default async function Home({ searchParams }: { searchParams: SearchParam
                 <thead>
                   <tr>
                     <th>Event</th>
-                    <th>Probability</th>
+                    <th>Frontrunner / Composite</th>
                     <th>Move</th>
                     <th>Confidence</th>
                     <th>Warnings</th>
@@ -60,10 +61,14 @@ export default async function Home({ searchParams }: { searchParams: SearchParam
                       <td>
                         <Link className="eventCell" href={`/forecasts/${forecast.slug}`}>
                           <span className="eventTitle">{forecast.title}</span>
-                          <span className="muted">{forecast.category} · {forecast.marketCount} markets</span>
+                          <span className="muted">{forecast.category} · {forecast.marketCount} markets{forecast.marketCount === 0 ? ' (no qualifying data)' : ''}</span>
+                          {forecast.leader && (
+                            <span className="muted" style={{fontSize: '11px', display: 'block'}}>Frontrunner: {forecast.leader}</span>
+                          )}
                         </Link>
                       </td>
-                      <td className="prob">{formatProbability(forecast.compositeProbability)}</td>
+                      <td className="prob">{forecast.marketCount > 0 ? formatProbability(forecast.compositeProbability) : '—'}{forecast.leader && ` (${shortLeader(forecast.leader)})`}
+                      </td>
                       <td className={moveClass(forecast.move24h)}>{formatMove(forecast.move24h)}</td>
                       <td><ConfidencePill confidence={forecast.confidence} /></td>
                       <td>
@@ -72,7 +77,7 @@ export default async function Home({ searchParams }: { searchParams: SearchParam
                           {forecast.warningCount}
                         </span>
                       </td>
-                      <td className="muted">{forecast.computedAt ? new Date(forecast.computedAt).toLocaleString() : "No forecast"}</td>
+                      <td className="muted">{formatTimestamp(forecast.computedAt)}</td>
                     </tr>
                   ))}
                 </tbody>
@@ -120,4 +125,11 @@ function formatMove(value: number | null): string {
 function moveClass(value: number | null): string {
   if (!value) return "muted";
   return value > 0 ? "moveUp" : "moveDown";
+}
+
+function shortLeader(q: string): string {
+  // Extract frontrunner name, e.g. "Will X win..." -> "X"; "Will France win the 2026..." -> "France"
+  let s = q.replace(/^Will\s+/i, "").replace(/\s+(win|to win|win the|nomination|nominee).*$/i, "");
+  if (s.length > 28) s = s.slice(0, 25) + "…";
+  return s.trim();
 }

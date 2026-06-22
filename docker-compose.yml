@@ -1,6 +1,6 @@
 services:
   postgres:
-    image: postgres:16-alpine
+    image: pgvector/pgvector:16-alpine
     environment:
       POSTGRES_DB: future_news
       POSTGRES_USER: future_news

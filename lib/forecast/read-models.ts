@@ -36,6 +36,11 @@ export async function getForecastList(filters: ForecastListFilters = {}) {
       const latest = cluster.markets.length ? cluster.compositeForecasts[0] ?? null : null;
       const warningCount = cluster.markets.reduce((sum, membership) => sum + membership.market.signalWarnings.length, 0);
       const move24h = estimateClusterMove(cluster.markets.map((membership) => membership.market.snapshots));
+      let leader = null;
+      if (cluster.markets.length) {
+        const top = [...cluster.markets].sort((a, b) => (b.market.currentProbability || 0) - (a.market.currentProbability || 0))[0];
+        leader = top.market.question;
+      }
       return {
         id: cluster.id,
         slug: cluster.slug,
@@ -49,7 +54,8 @@ export async function getForecastList(filters: ForecastListFilters = {}) {
         computedAt: latest?.computedAt ?? null,
         marketCount: cluster.markets.length,
         warningCount,
-        move24h
+        move24h,
+        leader
       };
     })
     .filter((forecast) => (filters.confidence && filters.confidence !== "ALL" ? forecast.confidence === filters.confidence : true))
@@ -76,7 +82,7 @@ export async function getForecastDetail(idOrSlug: string) {
   });
   if (!cluster) return null;
 
-  return {
+  const result = {
     id: cluster.id,
     slug: cluster.slug,
     title: cluster.title,
@@ -93,6 +99,7 @@ export async function getForecastDetail(idOrSlug: string) {
     markets: cluster.markets.map((membership) => ({
       id: membership.market.id,
       question: membership.market.question,
+      eventTitle: membership.market.eventTitle,
       sourcePlatform: membership.market.sourcePlatform,
       probability: membership.market.currentProbability,
       bid: membership.market.bid,
@@ -100,6 +107,7 @@ export async function getForecastDetail(idOrSlug: string) {
       volume: membership.market.volume,
       liquidity: membership.market.liquidity,
       sourceUrl: membership.market.sourceUrl,
+      closeTime: membership.market.closeTime,
       quality: membership.market.qualityScores[0] ?? null,
       warnings: membership.market.signalWarnings,
       snapshots: membership.market.snapshots.map((snapshot) => ({
@@ -112,6 +120,45 @@ export async function getForecastDetail(idOrSlug: string) {
       }))
     }))
   };
+
+  // For election-style clusters, group by event and take top 5 by probability per event.
+  // This makes 63 markets more concise and sensible (top per race) while showing the spread.
+  if (result.slug === "us-presidential-election" && result.markets.length > 5) {
+    const byEvent: Record<string, typeof result.markets> = {};
+    for (const m of result.markets) {
+      const key = m.eventTitle || 'Other';
+      if (!byEvent[key]) byEvent[key] = [];
+      byEvent[key].push(m);
+    }
+    let selected: typeof result.markets = [];
+    for (const ev of Object.keys(byEvent)) {
+      const top = byEvent[ev]
+        .sort((a, b) => (b.probability || 0) - (a.probability || 0))
+        .slice(0, 5);
+      selected.push(...top);
+    }
+    result.markets = selected.sort((a, b) => (b.probability || 0) - (a.probability || 0));
+
+    if (result.latestComposite?.sourceBreakdown && Array.isArray(result.latestComposite.sourceBreakdown)) {
+      (result.latestComposite as any).sourceBreakdown = (result.latestComposite as any).sourceBreakdown
+        .sort((a: any, b: any) => (b.probability || 0) - (a.probability || 0))
+        .slice(0, 15);
+    }
+  }
+
+  // Prepare additional series for the chart: top 4 markets' probability histories (for multi-line graph)
+  const topForChart = [...result.markets]
+    .sort((a, b) => (b.probability || 0) - (a.probability || 0))
+    .slice(0, 4);
+  (result as any).topMarketSeries = topForChart.map(m => ({
+    name: m.question.length > 40 ? m.question.slice(0, 37) + '...' : m.question,
+    data: m.snapshots.map(s => ({
+      observedAt: s.observedAt,
+      probability: s.probability
+    }))
+  }));
+
+  return result;
 }
 
 function estimateClusterMove(snapshotsByMarket: Array<Array<{ currentProbability: number | null }>>): number | null {

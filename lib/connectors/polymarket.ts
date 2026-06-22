@@ -46,17 +46,29 @@ export class PolymarketConnector implements MarketConnector {
 
   private gammaUrl = process.env.POLYMARKET_GAMMA_URL ?? DEFAULT_GAMMA_URL;
   private clobUrl = process.env.POLYMARKET_CLOB_URL ?? DEFAULT_CLOB_URL;
-  private marketLimit = Number(process.env.INGEST_MARKET_LIMIT ?? 300);
-  private minLiquidity = Number(process.env.MIN_LIQUIDITY ?? 10_000);
+  private marketLimit = Number(process.env.INGEST_MARKET_LIMIT ?? 500);
+  private minLiquidity = Number(process.env.MIN_LIQUIDITY ?? 500);
 
   async fetchMarkets(): Promise<NormalizedMarketInput[]> {
-    // Fetch with two strategies to get both high-volume and other relevant/liquid markets
-    const [byVolume, byLiquidity] = await Promise.all([
+    // Fetch with multiple strategies to get both high-volume and topic-specific markets (including macro)
+    const [byVolume, byLiquidity, noOrder] = await Promise.all([
       this.fetchGammaMarkets("volumeNum"),
-      this.fetchGammaMarkets("liquidityNum")
+      this.fetchGammaMarkets("liquidityNum"),
+      this.fetchGammaMarkets()  // default no specific order for variety
     ]);
+
+    const all = [...byVolume, ...byLiquidity, ...noOrder];
+
+    // Targeted searches for macro/politics topics that may have lower volume
+    const topicSearches = ["fed", "rate cut", "fomc", "inflation", "cpi", "recession", "unemployment", "senate", "house majority", "congress control", "world cup", "fifa", "nomination", "newsom", "greenland"];
+    for (const term of topicSearches) {
+      try {
+        const searched = await this.fetchGammaMarkets("volumeNum", term);
+        all.push(...searched);
+      } catch {}
+    }
+
     // Dedupe by source id
-    const all = [...byVolume, ...byLiquidity];
     const seen = new Set<string>();
     const unique = all.filter((m) => {
       const id = String(m.conditionId ?? m.id ?? "");
@@ -66,22 +78,25 @@ export class PolymarketConnector implements MarketConnector {
     });
 
     // Filter for reasonably liquid markets to reduce noise and irrelevant low-quality ones
+    // Gatekeeper: only high-integrity markets (liquidity > min or volume >100k). Always keep topic-searched for macro coverage.
     const liquidMarkets = unique.filter((m) => {
       const liq = toNumber(m.liquidityNum ?? m.liquidity) ?? 0;
       const vol = toNumber(m.volumeNum ?? m.volume) ?? 0;
-      return liq >= this.minLiquidity || vol >= 100_000;
+      const fromTopic = topicSearches.some((t) => (m.question || "").toLowerCase().includes(t) || (m.slug || "").toLowerCase().includes(t));
+      return liq >= this.minLiquidity || vol >= 100_000 || fromTopic;
     });
     const normalized = await Promise.all(liquidMarkets.map((market) => this.normalizeMarket(market)));
     return normalized.filter((market): market is NormalizedMarketInput => Boolean(market));
   }
 
-  private async fetchGammaMarkets(order: "volumeNum" | "liquidityNum" = "volumeNum"): Promise<GammaMarket[]> {
+  private async fetchGammaMarkets(order: "volumeNum" | "liquidityNum" = "volumeNum", search?: string): Promise<GammaMarket[]> {
     const url = new URL("/markets", this.gammaUrl);
     url.searchParams.set("limit", String(this.marketLimit));
     url.searchParams.set("active", "true");
     url.searchParams.set("closed", "false");
     url.searchParams.set("order", order);
     url.searchParams.set("ascending", "false");
+    if (search) url.searchParams.set("search", search);
 
     const response = await fetch(url);
     if (!response.ok) {

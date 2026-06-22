@@ -74,6 +74,7 @@ model NormalizedMarket {
   rawPayload          Json
   createdAt           DateTime           @default(now())
   updatedAt           DateTime           @updatedAt
+  embedding           Unsupported("vector(3072)")?
   snapshots           MarketSnapshot[]
   qualityScores       MarketQualityScore[]
   clusterMemberships  ClusterMarket[]
@@ -112,6 +113,7 @@ model ForecastCluster {
   title              String
   category           ForecastCategory
   description        String?
+  embedding          Unsupported("vector(768)")?
   createdAt          DateTime            @default(now())
   updatedAt          DateTime            @updatedAt
   markets            ClusterMarket[]

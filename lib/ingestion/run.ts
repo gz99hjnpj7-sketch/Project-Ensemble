@@ -1,9 +1,11 @@
 import type { Prisma, PrismaClient } from "@prisma/client";
-import { prisma as defaultPrisma } from "@/lib/db/prisma";
+import { prisma as defaultPrisma, ensureVectorExtension } from "@/lib/db/prisma";
 import { getEnabledConnectors } from "@/lib/connectors/registry";
 import type { MarketConnector, NormalizedMarketInput } from "@/lib/connectors/types";
 import { detectSignalWarnings } from "@/lib/forecast/anomalies";
-import { matchingSeedClusters } from "@/lib/forecast/clustering";
+import { matchingSeedClusters, getMarketEmbedding } from "@/lib/forecast/clustering";
+import { embedTexts, EMBEDDING_DIM } from "@/lib/embeddings";
+import { getClusterEmbedding } from "@/lib/forecast/clustering";
 import { computeCompositeForecast } from "@/lib/forecast/composite";
 import { computeQualityScore } from "@/lib/forecast/quality";
 import { seedClusters } from "@/lib/config/clusters";
@@ -25,6 +27,7 @@ export async function runIngestion(options: {
   const connectors = options.connectors ?? getEnabledConnectors();
   const now = options.now ?? new Date();
 
+  await ensureVectorExtension();
   await seedForecastClusters(db);
 
   const summary: IngestionSummary = {
@@ -39,6 +42,20 @@ export async function runIngestion(options: {
     try {
       const markets = await connector.fetchMarkets();
       summary.connectors.push({ sourcePlatform: connector.sourcePlatform, fetched: markets.length, errors: [] });
+
+      // Compute semantic embeddings for ALL fetched markets (this replaces keyword matching entirely)
+      const textsForEmbed = markets.map((m) => `${m.question} ${m.eventTitle ?? ""}`.trim());
+      let embeddings: number[][] = [];
+      try {
+        embeddings = await embedTexts(textsForEmbed);
+      } catch (e) {
+        console.warn("[ingest] Embedding generation failed for batch, falling back to per-item:", (e as Error).message);
+        embeddings = await Promise.all(markets.map(async (m) => {
+          try { return await getMarketEmbedding(m); } catch { return new Array(EMBEDDING_DIM).fill(0); }
+        }));
+      }
+      markets.forEach((m, i) => { m.embedding = embeddings[i]; });
+
       for (const market of markets) {
         const result = await persistMarketObservation(db, market, now);
         summary.upsertedMarkets += 1;
@@ -60,7 +77,7 @@ export async function runIngestion(options: {
 
 async function seedForecastClusters(db: PrismaClient): Promise<void> {
   for (const cluster of seedClusters) {
-    await db.forecastCluster.upsert({
+    const rec = await db.forecastCluster.upsert({
       where: { slug: cluster.slug },
       create: {
         slug: cluster.slug,
@@ -74,6 +91,20 @@ async function seedForecastClusters(db: PrismaClient): Promise<void> {
         description: cluster.description
       }
     });
+
+    // Persist cluster prototype embedding for vector search / future use
+    try {
+      const emb = await getClusterEmbedding(cluster);
+      if (emb?.length === EMBEDDING_DIM) {
+        await db.$executeRaw`
+          UPDATE "ForecastCluster"
+          SET embedding = ${emb}::vector
+          WHERE id = ${rec.id}
+        `;
+      }
+    } catch (e) {
+      // non-fatal
+    }
   }
 }
 
@@ -113,6 +144,19 @@ async function persistMarketObservation(db: PrismaClient, input: NormalizedMarke
     }
   });
 
+  // Store semantic embedding (pgvector). Use raw because of Unsupported vector type.
+  if (input.embedding && input.embedding.length === EMBEDDING_DIM) {
+    try {
+      await db.$executeRaw`
+        UPDATE "NormalizedMarket"
+        SET embedding = ${input.embedding}::vector
+        WHERE id = ${market.id}
+      `;
+    } catch (e) {
+      if (process.env.NODE_ENV !== "production") console.warn("[ingest] Failed to store embedding:", (e as Error).message);
+    }
+  }
+
   const snapshot = await db.marketSnapshot.create({
     data: {
       marketId: market.id,
@@ -147,7 +191,7 @@ async function persistMarketObservation(db: PrismaClient, input: NormalizedMarke
     }
   });
 
-  await assignManualClusters(db, market);
+  await assignManualClusters(db, market, input.embedding);
 
   const previous24h = await db.marketSnapshot.findFirst({
     where: {
@@ -174,8 +218,19 @@ async function persistMarketObservation(db: PrismaClient, input: NormalizedMarke
   return { warningCount: warnings.length };
 }
 
-async function assignManualClusters(db: PrismaClient, market: Parameters<typeof matchingSeedClusters>[0] & { id: string }): Promise<void> {
-  const matches = matchingSeedClusters(market);
+async function assignManualClusters(
+  db: PrismaClient,
+  market: Parameters<typeof matchingSeedClusters>[0] & { id: string },
+  providedEmbedding?: number[]
+): Promise<void> {
+  // Pass embedding through for pure semantic matching (no more keywords)
+  const marketForMatch = {
+    ...market,
+    embedding: providedEmbedding || (market as any).embedding
+  };
+
+  const matches = await matchingSeedClusters(marketForMatch as any);
+
   const seededClusters = await db.forecastCluster.findMany({
     where: { slug: { in: seedClusters.map((cluster) => cluster.slug) } },
     select: { id: true, slug: true }
