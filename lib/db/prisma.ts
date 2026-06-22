@@ -26,11 +26,12 @@ export async function ensureVectorExtension(): Promise<void> {
 
   // Add columns if the schema was updated without a full migration
   try {
+    // JSON array for embeddings (portable, no extension)
     await prisma.$executeRawUnsafe(
-      `ALTER TABLE "NormalizedMarket" ADD COLUMN IF NOT EXISTS embedding vector(3072);`
+      `ALTER TABLE "NormalizedMarket" ADD COLUMN IF NOT EXISTS embedding JSON;`
     );
     await prisma.$executeRawUnsafe(
-      `ALTER TABLE "ForecastCluster" ADD COLUMN IF NOT EXISTS embedding vector(3072);`
+      `ALTER TABLE "ForecastCluster" ADD COLUMN IF NOT EXISTS embedding JSON;`
     );
   } catch (e) {
     if (process.env.NODE_ENV !== "production") {

@@ -53,13 +53,18 @@ export default async function ForecastDetail({ params }: { params: Promise<{ id:
               <h2>Composite Forecast</h2>
               <span className="prob">{formatProbability(forecast.latestComposite?.compositeProbability ?? null)}</span>
             </div>
+            <div style={{ padding: "0 12px 8px", fontSize: "12px", color: "var(--muted)" }}>
+              This % is the quality-weighted (liquidity × recency × spread) wisdom of the linked markets. 
+              See Source Breakdown for exactly who contributes how many percentage points.
+            </div>
             <div className="panelBody">
               <ForecastChart
                 compositeData={forecast.compositeHistory}
                 series={(forecast as any).topMarketSeries || []}
               />
               <p className="muted" style={{ fontSize: 12, marginTop: 8 }}>
-                Solid line = cluster frontrunner probability (max individual market prob at each time). Dashed = top individual markets.
+                Composite = quality + recency weighted average (or max for mutually-exclusive races) across linked markets.
+                This is our current best estimate from the prediction market crowd, not "the truth".
               </p>
             </div>
           </section>

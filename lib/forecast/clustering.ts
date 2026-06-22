@@ -47,8 +47,9 @@ export async function matchingSeedClustersSemantic(
 
   // Use precomputed embedding if provided on the market object, else generate.
   let marketEmb: number[];
-  if (market.embedding && market.embedding.length > 0) {
-    marketEmb = market.embedding;
+  const rawEmb = market.embedding as any;
+  if (rawEmb && (Array.isArray(rawEmb) ? rawEmb.length > 0 : Object.keys(rawEmb).length > 0)) {
+    marketEmb = Array.isArray(rawEmb) ? rawEmb : (typeof rawEmb === "string" ? JSON.parse(rawEmb) : []);
   } else {
     marketEmb = await getMarketEmbedding(market);
   }
@@ -56,10 +57,6 @@ export async function matchingSeedClustersSemantic(
   const matches: SeedCluster[] = [];
 
   for (const cluster of seedClusters) {
-    // Respect platform filter if the legacy match block still specifies one (optional)
-    const expectedPlatform = cluster.match?.sourcePlatform;
-    if (expectedPlatform && expectedPlatform !== platform) continue;
-
     const clusterEmb = await getClusterEmbedding(cluster);
     const sim = cosineSimilarity(marketEmb, clusterEmb);
 
@@ -84,22 +81,28 @@ export async function findSimilarMarkets(
   queryEmbedding: number[],
   limit = 20,
   minSim = MIN_SIM_THRESHOLD
-): Promise<Array<{ marketId: string; similarity: number }>> {
+): Promise<Array<{ marketId: string; similarity: number; question?: string }>> {
   if (!queryEmbedding || queryEmbedding.length === 0) return [];
 
-  // Use <=> for cosine distance (1 - cosine sim) with pgvector
-  // We convert to similarity = 1 - distance
-  const rows = await prisma.$queryRaw<Array<{ id: string; distance: number }>>`
-    SELECT id, embedding <=> ${queryEmbedding}::vector AS distance
-    FROM "NormalizedMarket"
-    WHERE embedding IS NOT NULL
-    ORDER BY distance ASC
-    LIMIT ${limit};
-  `;
+  // Pure-JS cosine ranking over stored Float[] embeddings.
+  // Good enough and robust (no extension dependency).
+  const candidates = await prisma.normalizedMarket.findMany({
+    where: { embedding: { not: null } },
+    select: { id: true, question: true, embedding: true },
+    take: 800
+  });
 
-  return (rows as Array<{ id: string; distance: number }>)
-    .map((r) => ({ marketId: r.id, similarity: 1 - r.distance }))
-    .filter((r) => r.similarity >= minSim);
+  const scored = (candidates as any[])
+    .map((c) => ({
+      marketId: c.id,
+      similarity: cosineSimilarity(queryEmbedding, c.embedding as number[]),
+      question: c.question
+    }))
+    .filter((s) => s.similarity >= minSim)
+    .sort((a, b) => b.similarity - a.similarity)
+    .slice(0, limit);
+
+  return scored;
 }
 
 /**
@@ -109,4 +112,118 @@ export function isSemanticallyRelevant(marketEmb: number[], clusterEmbs: number[
   if (!marketEmb?.length) return false;
   const best = Math.max(...clusterEmbs.map((ce) => cosineSimilarity(marketEmb, ce)));
   return best >= MIN_SIM_THRESHOLD;
+}
+
+/**
+ * Dynamic event discovery (the key missing piece).
+ * 
+ * Takes recently embedded open markets.
+ * Finds groups of markets that are semantically close to each other (> ~0.68).
+ * For groups not already well-covered by existing seed clusters, 
+ * asks Gemini to synthesize a title + description and creates a new ForecastCluster.
+ * Links the markets into the cluster.
+ *
+ * This enables "gather related markets of future events" beyond the hand-written seeds.
+ */
+export async function discoverSemanticEvents(
+  prisma: any,
+  recentMarkets: Array<{ id: string; question: string; eventTitle: string; embedding: number[] | null }>,
+  minGroupSize = 3,
+  intraSim = 0.68
+): Promise<number> {
+  const { seedClusters } = await import("@/lib/config/clusters");
+  const { synthesizeEventMeta, embedText } = await import("@/lib/embeddings");
+
+  if (!recentMarkets.length) return 0;
+
+  // Build simple groups via high intra-similarity
+  const groups: string[][] = [];
+  const used = new Set<string>();
+
+  for (let i = 0; i < recentMarkets.length; i++) {
+    const m1 = recentMarkets[i];
+    if (!m1.embedding || used.has(m1.id)) continue;
+
+    const group = [m1.id];
+    used.add(m1.id);
+
+    for (let j = i + 1; j < recentMarkets.length; j++) {
+      const m2 = recentMarkets[j];
+      if (!m2.embedding || used.has(m2.id)) continue;
+      if (cosineSimilarity(m1.embedding, m2.embedding) >= intraSim) {
+        group.push(m2.id);
+        used.add(m2.id);
+      }
+    }
+
+    if (group.length >= minGroupSize) groups.push(group);
+  }
+
+  if (groups.length === 0) return 0;
+
+  let created = 0;
+
+  // Precompute seed prototypes (cheap, only ~30)
+  const seedPrototypes: Array<{ slug: string; emb: number[] }> = [];
+  for (const seed of seedClusters) {
+    try {
+      const proto = `${seed.title}. ${seed.description}`;
+      const emb = await embedText(proto);
+      seedPrototypes.push({ slug: seed.slug, emb });
+    } catch {}
+  }
+
+  for (const groupIds of groups) {
+    const groupMarkets = recentMarkets.filter(m => groupIds.includes(m.id) && m.embedding);
+    if (groupMarkets.length < minGroupSize) continue;
+
+    const questions = groupMarkets.map(m => m.question);
+
+    // Is this group already covered well by a seed?
+    let covered = false;
+    for (const { emb } of seedPrototypes) {
+      const best = Math.max(0, ...groupMarkets.map(m => cosineSimilarity(m.embedding!, emb)));
+      if (best >= 0.62) { covered = true; break; }
+    }
+    if (covered) continue;
+
+    // Synthesize human readable event
+    let meta;
+    try {
+      meta = await synthesizeEventMeta(questions);
+    } catch {
+      meta = { title: "Emergent Market Cluster", description: questions[0] };
+    }
+
+    const slugBase = meta.title.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/-+/g, "-").slice(0, 55);
+    const slug = "disc-" + slugBase;
+
+    const cluster = await prisma.forecastCluster.upsert({
+      where: { slug },
+      create: {
+        slug,
+        title: meta.title,
+        category: "OTHER" as any,
+        description: meta.description
+      },
+      update: { title: meta.title, description: meta.description }
+    });
+
+    for (const m of groupMarkets) {
+      await prisma.clusterMarket.upsert({
+        where: { clusterId_marketId: { clusterId: cluster.id, marketId: m.id } },
+        create: {
+          clusterId: cluster.id,
+          marketId: m.id,
+          sourcePlatform: "POLYMARKET" as any,
+          relationship: "semantic"
+        },
+        update: {}
+      });
+    }
+
+    created += 1;
+  }
+
+  return created;
 }

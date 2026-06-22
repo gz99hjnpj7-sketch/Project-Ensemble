@@ -18,7 +18,10 @@ export type CompositeResult = {
 };
 
 export function computeCompositeForecast(inputs: CompositeInput[]): CompositeResult {
-  const usable = inputs.filter((input) => input.probability !== null);
+  const usable = inputs.filter((input) => 
+    input.probability !== null &&
+    input.qualityScore >= 30 // basic quality floor
+  );
   if (usable.length === 0) {
     return {
       compositeProbability: null,

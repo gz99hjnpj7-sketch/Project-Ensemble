@@ -3,7 +3,7 @@ import { prisma as defaultPrisma, ensureVectorExtension } from "@/lib/db/prisma"
 import { getEnabledConnectors } from "@/lib/connectors/registry";
 import type { MarketConnector, NormalizedMarketInput } from "@/lib/connectors/types";
 import { detectSignalWarnings } from "@/lib/forecast/anomalies";
-import { matchingSeedClusters, getMarketEmbedding } from "@/lib/forecast/clustering";
+import { matchingSeedClusters, getMarketEmbedding, discoverSemanticEvents } from "@/lib/forecast/clustering";
 import { embedTexts, EMBEDDING_DIM } from "@/lib/embeddings";
 import { getClusterEmbedding } from "@/lib/forecast/clustering";
 import { computeCompositeForecast } from "@/lib/forecast/composite";
@@ -72,6 +72,27 @@ export async function runIngestion(options: {
   }
 
   summary.composites = await recomputeClusterForecasts(db);
+
+  // Dynamic semantic event discovery — the heart of general "gather related markets"
+  try {
+    const recentWithEmb = await db.normalizedMarket.findMany({
+      where: {
+        resolutionStatus: { notIn: ["RESOLVED", "CLOSED"] as any },
+      },
+      select: { id: true, question: true, eventTitle: true, embedding: true },
+      take: 400,
+      orderBy: { lastUpdated: "desc" }
+    });
+
+    const discovered = await discoverSemanticEvents(db, recentWithEmb as any);
+    if (discovered > 0) {
+      console.log(`[ingest] Discovered and created ${discovered} new semantic event clusters`);
+      await recomputeClusterForecasts(db);
+    }
+  } catch (e) {
+    console.warn("[ingest] Dynamic discovery non-fatal error:", (e as Error).message);
+  }
+
   return summary;
 }
 
@@ -92,13 +113,12 @@ async function seedForecastClusters(db: PrismaClient): Promise<void> {
       }
     });
 
-    // Persist cluster prototype embedding for vector search / future use
+    // Persist cluster prototype embedding (Float[])
     try {
       const emb = await getClusterEmbedding(cluster);
       if (emb?.length === EMBEDDING_DIM) {
         await db.$executeRaw`
-          UPDATE "ForecastCluster"
-          SET embedding = ${emb}::vector
+          UPDATE "ForecastCluster" SET embedding = ${JSON.stringify(emb)}::jsonb
           WHERE id = ${rec.id}
         `;
       }
@@ -144,14 +164,13 @@ async function persistMarketObservation(db: PrismaClient, input: NormalizedMarke
     }
   });
 
-  // Store semantic embedding (pgvector). Use raw because of Unsupported vector type.
+  // Store semantic embedding as native Float[] (simple, no extension needed)
   if (input.embedding && input.embedding.length === EMBEDDING_DIM) {
     try {
-      await db.$executeRaw`
-        UPDATE "NormalizedMarket"
-        SET embedding = ${input.embedding}::vector
-        WHERE id = ${market.id}
-      `;
+      await db.normalizedMarket.update({
+        where: { id: market.id },
+        data: { embedding: input.embedding as any }
+      });
     } catch (e) {
       if (process.env.NODE_ENV !== "production") console.warn("[ingest] Failed to store embedding:", (e as Error).message);
     }
@@ -191,7 +210,15 @@ async function persistMarketObservation(db: PrismaClient, input: NormalizedMarke
     }
   });
 
-  await assignManualClusters(db, market, input.embedding);
+  // Pass a clean object for semantic matching (DB row may have Json embedding)
+  const marketForAssign = {
+    id: market.id,
+    sourcePlatform: input.sourcePlatform,
+    question: input.question,
+    eventTitle: input.eventTitle,
+    sourceSlug: input.sourceSlug,
+  };
+  await assignManualClusters(db, marketForAssign as any, input.embedding);
 
   const previous24h = await db.marketSnapshot.findFirst({
     where: {

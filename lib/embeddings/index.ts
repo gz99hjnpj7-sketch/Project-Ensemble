@@ -31,14 +31,26 @@ export async function embedText(text: string): Promise<number[]> {
   return values;
 }
 
-export async function embedTexts(texts: string[]): Promise<number[][]> {
+export async function embedTexts(texts: string[], concurrency = 6): Promise<number[][]> {
   if (texts.length === 0) return [];
-  // Minimal: sequential to stay within free tier / simple. Can optimize with batchEmbedContents later.
-  const embeddings: number[][] = [];
-  for (const t of texts) {
-    embeddings.push(await embedText(t));
+
+  const results: number[][] = new Array(texts.length);
+  let index = 0;
+
+  async function worker() {
+    while (index < texts.length) {
+      const i = index++;
+      try {
+        results[i] = await embedText(texts[i]);
+      } catch (e) {
+        results[i] = new Array(EMBEDDING_DIM).fill(0);
+      }
+    }
   }
-  return embeddings;
+
+  const workers = Array.from({ length: Math.min(concurrency, texts.length) }, () => worker());
+  await Promise.all(workers);
+  return results;
 }
 
 export function cosineSimilarity(a: number[], b: number[]): number {
@@ -68,3 +80,38 @@ export function passesSemanticFilter(
 
 export { EMBEDDING_DIM };
 export const MIN_SIM_THRESHOLD = MIN_SEMANTIC_SIMILARITY;
+
+/**
+ * Use a cheap Gemini model to turn a group of related market questions into
+ * a clean event title + description for a new ForecastCluster.
+ */
+export async function synthesizeEventMeta(questions: string[]): Promise<{ title: string; description: string }> {
+  const client = getClient();
+  const model = client.getGenerativeModel({ model: "gemini-1.5-flash" });
+
+  const prompt = `You are building a semantic forecast intelligence system.
+Given the following related prediction market questions, produce:
+- A short, neutral, specific event title (under 65 characters)
+- A concise one-sentence description of the core future event or question being asked
+
+Questions:
+${questions.slice(0, 8).map((q, i) => `${i+1}. ${q}`).join("\n")}
+
+Return ONLY valid JSON: {"title": "string", "description": "string"}`;
+
+  try {
+    const result = await model.generateContent(prompt);
+    let text = result.response.text().trim();
+    text = text.replace(/^```json\s*|\s*```$/g, "").trim();
+    const parsed = JSON.parse(text);
+    return {
+      title: (parsed.title || "Market Cluster").slice(0, 70),
+      description: (parsed.description || questions[0]).slice(0, 300)
+    };
+  } catch {
+    return {
+      title: "Related Prediction Markets",
+      description: questions[0]
+    };
+  }
+}
