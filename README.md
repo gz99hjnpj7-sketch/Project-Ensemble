@@ -34,36 +34,21 @@ The Polymarket connector uses public Gamma and CLOB read endpoints only. There a
 
 ## Keeping Changes in Sync with GitHub
 
-**This project is NOT automatically synced** to GitHub. File edits (including in Codespaces) are local until you commit and push.
+This project is **not** automatically synced to GitHub.
 
-### Quick manual sync (recommended)
+### Recommended: VS Code Source Control panel
+
+1. Open the **Source Control** sidebar (left icon or `Ctrl+Shift+G`).
+2. Review your changes.
+3. Write a commit message and click **Commit**.
+4. Click **Sync Changes** (cloud icon) — this commits + pushes in one step.
+
+### Occasional manual sync from terminal
 
 ```bash
 npm run git:sync
 ```
 
-This stages everything, creates a timestamped commit if needed, and pushes.
+In GitHub Codespaces, `git push` works without extra authentication thanks to the built-in credential helper.
 
-### Near-automatic watching
-
-While developing, run this in a second terminal:
-
-```bash
-npm run git:watch
-```
-
-It uses `inotifywait` to watch `app/`, `lib/`, `components/`, etc. and will auto-sync after you stop typing for a few seconds.
-
-### In VS Code / Codespaces (easiest for most people)
-
-1. Open the **Source Control** sidebar (left icon or `Ctrl+Shift+G`).
-2. Review your changes.
-3. Write a message and click **Commit**.
-4. Click **Sync Changes** (or the cloud icon) — this does commit + push in one step.
-
-In GitHub Codespaces, `git push` works with zero extra authentication thanks to the built-in credential helper.
-
-### Tips
-- The `.gitignore` already protects `.env`, `node_modules`, `.next`, etc.
-- Commit frequently with clear messages when possible.
-- The watcher is optional — many developers prefer manual control via the VS Code UI.
+The `.gitignore` already protects `.env`, `node_modules`, `.next`, etc. Commit frequently with clear messages when possible.

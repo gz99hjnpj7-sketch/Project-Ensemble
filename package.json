@@ -15,8 +15,7 @@
     "prisma:generate": "prisma generate",
     "prisma:migrate": "prisma migrate dev",
     "prisma:seed": "tsx prisma/seed.ts",
-    "git:sync": "bash scripts/git-sync.sh",
-    "git:watch": "bash scripts/git-watch.sh"
+    "git:sync": "bash scripts/git-sync.sh"
   },
   "dependencies": {
     "@prisma/client": "^6.1.0",
