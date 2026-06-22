@@ -14,7 +14,9 @@
     "worker:schedule": "tsx worker/schedule.ts",
     "prisma:generate": "prisma generate",
     "prisma:migrate": "prisma migrate dev",
-    "prisma:seed": "tsx prisma/seed.ts"
+    "prisma:seed": "tsx prisma/seed.ts",
+    "git:sync": "bash scripts/git-sync.sh",
+    "git:watch": "bash scripts/git-watch.sh"
   },
   "dependencies": {
     "@prisma/client": "^6.1.0",
