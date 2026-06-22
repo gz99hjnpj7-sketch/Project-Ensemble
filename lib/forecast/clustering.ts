@@ -54,18 +54,27 @@ export async function matchingSeedClustersSemantic(
     marketEmb = await getMarketEmbedding(market);
   }
 
-  const matches: SeedCluster[] = [];
+  // Pick ONLY the single best-matching cluster (if it meets threshold).
+  // This prevents one market (e.g. World Cup) from polluting many unrelated clusters.
+  let bestCluster: SeedCluster | null = null;
+  let bestSim = -1;
 
   for (const cluster of seedClusters) {
     const clusterEmb = await getClusterEmbedding(cluster);
     const sim = cosineSimilarity(marketEmb, clusterEmb);
-
-    if (sim >= MIN_SIM_THRESHOLD) {
-      matches.push(cluster);
+    if (sim > bestSim) {
+      bestSim = sim;
+      bestCluster = cluster;
     }
   }
 
-  return matches;
+  if (bestCluster && bestSim >= MIN_SIM_THRESHOLD) {
+    // Optional: log for observability during ingest
+    console.log(`[semantic-match] ${market.question?.slice(0,60)}... -> ${bestCluster.slug} (sim=${bestSim.toFixed(3)})`);
+    return [bestCluster];
+  }
+
+  return [];
 }
 
 // Backwards-compatible name used by ingestion. Now delegates to semantic version.
@@ -128,8 +137,8 @@ export function isSemanticallyRelevant(marketEmb: number[], clusterEmbs: number[
 export async function discoverSemanticEvents(
   prisma: any,
   recentMarkets: Array<{ id: string; question: string; eventTitle: string; embedding: number[] | null }>,
-  minGroupSize = 3,
-  intraSim = 0.68
+  minGroupSize = 4,
+  intraSim = 0.78 // much stricter to avoid loose groups like "any high prob markets"
 ): Promise<number> {
   const { seedClusters } = await import("@/lib/config/clusters");
   const { synthesizeEventMeta, embedText } = await import("@/lib/embeddings");
@@ -177,13 +186,17 @@ export async function discoverSemanticEvents(
     const groupMarkets = recentMarkets.filter(m => groupIds.includes(m.id) && m.embedding);
     if (groupMarkets.length < minGroupSize) continue;
 
+    // Require decent average quality/liquidity in the group before creating new cluster
+    const avgLiq = groupMarkets.reduce((s, m: any) => s + (m.liquidity || 0), 0) / groupMarkets.length;
+    if (avgLiq < 10000) continue;
+
     const questions = groupMarkets.map(m => m.question);
 
     // Is this group already covered well by a seed?
     let covered = false;
     for (const { emb } of seedPrototypes) {
       const best = Math.max(0, ...groupMarkets.map(m => cosineSimilarity(m.embedding!, emb)));
-      if (best >= 0.62) { covered = true; break; }
+      if (best >= 0.70) { covered = true; break; }
     }
     if (covered) continue;
 

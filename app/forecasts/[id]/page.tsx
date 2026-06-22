@@ -42,7 +42,7 @@ export default async function ForecastDetail({ params }: { params: Promise<{ id:
           <p className="muted" style={{ margin: 0 }}>{forecast.description}</p>
           {topMarket && topMarket.probability != null && (
             <p style={{ margin: '8px 0 0', fontSize: 13, color: 'var(--muted)' }}>
-              Composite = probability of the current leader (highest individual market). Currently: <strong>{topMarket.question}</strong> at {(topMarket.probability * 100).toFixed(1)}%.
+              For mutually-exclusive races the composite uses the highest individual market prob. Currently: <strong>{topMarket.question}</strong> at {(topMarket.probability * 100).toFixed(1)}%.
             </p>
           )}
         </div>
@@ -66,6 +66,13 @@ export default async function ForecastDetail({ params }: { params: Promise<{ id:
                 Composite = quality + recency weighted average (or max for mutually-exclusive races) across linked markets.
                 This is our current best estimate from the prediction market crowd, not "the truth".
               </p>
+              {Array.isArray(forecast.latestComposite?.sourceBreakdown) && forecast.latestComposite.sourceBreakdown.length > 0 && (
+                <div style={{marginTop:8, fontSize:11}}>
+                  <strong>Top contributors:</strong> {forecast.latestComposite.sourceBreakdown.slice(0,3).map((b:any,i:number) => (
+                    <span key={i} style={{marginRight:8}}>{(b.question||'').slice(0,30)} (+{(b.contribution||0)*100|0}pp)</span>
+                  ))}
+                </div>
+              )}
             </div>
           </section>
 

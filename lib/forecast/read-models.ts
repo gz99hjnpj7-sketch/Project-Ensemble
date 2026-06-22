@@ -36,11 +36,6 @@ export async function getForecastList(filters: ForecastListFilters = {}) {
       const latest = cluster.markets.length ? cluster.compositeForecasts[0] ?? null : null;
       const warningCount = cluster.markets.reduce((sum, membership) => sum + membership.market.signalWarnings.length, 0);
       const move24h = estimateClusterMove(cluster.markets.map((membership) => membership.market.snapshots));
-      let leader = null;
-      if (cluster.markets.length) {
-        const top = [...cluster.markets].sort((a, b) => (b.market.currentProbability || 0) - (a.market.currentProbability || 0))[0];
-        leader = top.market.question;
-      }
       return {
         id: cluster.id,
         slug: cluster.slug,
@@ -54,8 +49,7 @@ export async function getForecastList(filters: ForecastListFilters = {}) {
         computedAt: latest?.computedAt ?? null,
         marketCount: cluster.markets.length,
         warningCount,
-        move24h,
-        leader
+        move24h
       };
     })
     .filter((forecast) => (filters.confidence && filters.confidence !== "ALL" ? forecast.confidence === filters.confidence : true))

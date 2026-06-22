@@ -79,7 +79,7 @@ export async function runIngestion(options: {
       where: {
         resolutionStatus: { notIn: ["RESOLVED", "CLOSED"] as any },
       },
-      select: { id: true, question: true, eventTitle: true, embedding: true },
+      select: { id: true, question: true, eventTitle: true, embedding: true, liquidity: true, volume: true },
       take: 400,
       orderBy: { lastUpdated: "desc" }
     });
@@ -210,15 +210,24 @@ async function persistMarketObservation(db: PrismaClient, input: NormalizedMarke
     }
   });
 
-  // Pass a clean object for semantic matching (DB row may have Json embedding)
-  const marketForAssign = {
-    id: market.id,
-    sourcePlatform: input.sourcePlatform,
-    question: input.question,
-    eventTitle: input.eventTitle,
-    sourceSlug: input.sourceSlug,
-  };
-  await assignManualClusters(db, marketForAssign as any, input.embedding);
+  // Quality / liquidity / volume gate before semantic assignment (prevents pollution like World Cup markets into election clusters)
+  const liq = input.liquidity ?? 0;
+  const vol = input.volume ?? 0;
+  const isOpen = input.resolutionStatus === 'OPEN' || !input.resolutionStatus;
+  if (quality.score >= 45 && liq >= 5000 && vol >= 10000 && isOpen && input.currentProbability != null) {
+    const marketForAssign = {
+      id: market.id,
+      sourcePlatform: input.sourcePlatform,
+      question: input.question,
+      eventTitle: input.eventTitle,
+      sourceSlug: input.sourceSlug,
+    };
+    await assignManualClusters(db, marketForAssign as any, input.embedding);
+  } else {
+    if (process.env.NODE_ENV !== "production") {
+      console.log(`[ingest] Skipped assignment for ${input.question} (quality=${quality.score.toFixed(0)}, liq=${liq}, vol=${vol})`);
+    }
+  }
 
   const previous24h = await db.marketSnapshot.findFirst({
     where: {

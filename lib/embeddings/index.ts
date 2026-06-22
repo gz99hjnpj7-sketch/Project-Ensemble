@@ -3,7 +3,7 @@ import { GoogleGenerativeAI } from "@google/generative-ai";
 const GEMINI_API_KEY = process.env.GEMINI_API_KEY || "";
 const EMBED_MODEL = "gemini-embedding-001"; // 3072 dimensions with current Gemini surface for the test key
 const EMBEDDING_DIM = 3072;
-const MIN_SEMANTIC_SIMILARITY = 0.58; // tune as needed for semantic filter
+const MIN_SEMANTIC_SIMILARITY = 0.75; // raised for stricter matching to avoid unrelated markets (e.g. World Cup polluting politics)
 
 let genAI: GoogleGenerativeAI | null = null;
 

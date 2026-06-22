@@ -20,19 +20,19 @@ export const seedClusters: SeedCluster[] = [
     slug: "us-presidential-election",
     title: "US Presidential Election 2028",
     category: ForecastCategory.POLITICS,
-    description: "Prediction markets on the winner of the 2028 US presidential election, Democratic and Republican nominees, primary frontrunners, and key candidate odds."
+    description: "Prediction markets on the winner of the 2028 US presidential election, Democratic and Republican nominees, primary frontrunners, candidate odds, and US politics election party control."
   },
   {
     slug: "us-senate-control",
     title: "US Senate Majority Control",
     category: ForecastCategory.POLITICS,
-    description: "Markets forecasting which party will control the US Senate after the next election, including specific race outcomes that determine majority."
+    description: "Markets forecasting which party will control the US Senate after the next election (2026 or 2028 midterms), majority party in Senate, US congressional control politics."
   },
   {
     slug: "us-house-control",
     title: "US House of Representatives Control",
     category: ForecastCategory.POLITICS,
-    description: "Markets on which party will hold the majority in the US House of Representatives, key battleground races and overall control."
+    description: "Markets on which party will hold the majority in the US House of Representatives after midterms, key House races, US congressional politics control."
   },
   {
     slug: "uk-general-election",
@@ -46,7 +46,7 @@ export const seedClusters: SeedCluster[] = [
     slug: "fed-rate-path",
     title: "Federal Reserve Interest Rate Path",
     category: ForecastCategory.MACRO,
-    description: "Markets on FOMC decisions, the target federal funds rate range at upcoming meetings, number of cuts or hikes this year, and terminal rate."
+    description: "US Federal Reserve FOMC interest rate decisions, federal funds target range after specific meetings, expected number of rate cuts this year and terminal rate level. Economic policy only."
   },
   {
     slug: "ecb-rate-path",
@@ -58,13 +58,13 @@ export const seedClusters: SeedCluster[] = [
     slug: "us-inflation-cpi",
     title: "US Inflation and CPI Outcomes",
     category: ForecastCategory.MACRO,
-    description: "Prediction markets on headline and core CPI prints, year-over-year inflation rates, and whether inflation will be above or below target."
+    description: "US economic data: headline CPI, core CPI month-over-month or YoY prints, PCE inflation rate outcomes. Pure macro inflation statistics, not sports or other events."
   },
   {
     slug: "us-recession",
     title: "US Recession Probability",
     category: ForecastCategory.MACRO,
-    description: "Markets on the probability of a US recession within 6-12 months, based on GDP, unemployment, and other indicators."
+    description: "US macro economy: probability of recession within 12 months per GDP contraction, unemployment rate, labor market stress indicators. Economic statistics only."
   },
   {
     slug: "unemployment-rate",

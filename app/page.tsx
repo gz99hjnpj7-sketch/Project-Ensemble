@@ -48,7 +48,7 @@ export default async function Home({ searchParams }: { searchParams: SearchParam
                 <thead>
                   <tr>
                     <th>Event</th>
-                    <th>Frontrunner / Composite</th>
+                    <th>Composite</th>
                     <th>Move</th>
                     <th>Confidence</th>
                     <th>Warnings</th>
@@ -62,12 +62,10 @@ export default async function Home({ searchParams }: { searchParams: SearchParam
                         <Link className="eventCell" href={`/forecasts/${forecast.slug}`}>
                           <span className="eventTitle">{forecast.title}</span>
                           <span className="muted">{forecast.category} · {forecast.marketCount} markets{forecast.marketCount === 0 ? ' (no qualifying data)' : ''}</span>
-                          {forecast.leader && (
-                            <span className="muted" style={{fontSize: '11px', display: 'block'}}>Frontrunner: {forecast.leader}</span>
-                          )}
+
                         </Link>
                       </td>
-                      <td className="prob">{forecast.marketCount > 0 ? formatProbability(forecast.compositeProbability) : '—'}{forecast.leader && ` (${shortLeader(forecast.leader)})`}
+                      <td className="prob">{forecast.marketCount > 0 ? formatProbability(forecast.compositeProbability) : '—'}
                       </td>
                       <td className={moveClass(forecast.move24h)}>{formatMove(forecast.move24h)}</td>
                       <td><ConfidencePill confidence={forecast.confidence} /></td>
@@ -125,11 +123,4 @@ function formatMove(value: number | null): string {
 function moveClass(value: number | null): string {
   if (!value) return "muted";
   return value > 0 ? "moveUp" : "moveDown";
-}
-
-function shortLeader(q: string): string {
-  // Extract frontrunner name, e.g. "Will X win..." -> "X"; "Will France win the 2026..." -> "France"
-  let s = q.replace(/^Will\s+/i, "").replace(/\s+(win|to win|win the|nomination|nominee).*$/i, "");
-  if (s.length > 28) s = s.slice(0, 25) + "…";
-  return s.trim();
 }
