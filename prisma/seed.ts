@@ -11,12 +11,14 @@ async function main() {
         slug: cluster.slug,
         title: cluster.title,
         category: cluster.category,
-        description: cluster.description
+        description: cluster.description,
+        isSeed: true
       },
       update: {
         title: cluster.title,
         category: cluster.category,
-        description: cluster.description
+        description: cluster.description,
+        isSeed: true
       }
     });
   }

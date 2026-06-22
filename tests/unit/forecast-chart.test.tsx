@@ -5,7 +5,7 @@ import { ForecastChart } from "@/components/ForecastChart";
 
 describe("ForecastChart", () => {
   it("renders an empty state without history", () => {
-    render(<ForecastChart data={[]} />);
+    render(<ForecastChart compositeData={[]} />);
     expect(screen.getByText("No snapshot history yet")).toBeInTheDocument();
   });
 });

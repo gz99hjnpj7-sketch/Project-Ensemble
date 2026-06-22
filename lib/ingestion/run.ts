@@ -1,14 +1,14 @@
 import type { Prisma, PrismaClient } from "@prisma/client";
-import { prisma as defaultPrisma, ensureVectorExtension } from "@/lib/db/prisma";
+import { IngestionRunStatus, ResolutionStatus } from "@prisma/client";
+import { prisma as defaultPrisma } from "@/lib/db/prisma";
 import { getEnabledConnectors } from "@/lib/connectors/registry";
 import type { MarketConnector, NormalizedMarketInput } from "@/lib/connectors/types";
+import { seedClusters } from "@/lib/config/clusters";
 import { detectSignalWarnings } from "@/lib/forecast/anomalies";
-import { matchingSeedClusters, getMarketEmbedding, discoverSemanticEvents } from "@/lib/forecast/clustering";
-import { embedTexts, EMBEDDING_DIM } from "@/lib/embeddings";
-import { getClusterEmbedding } from "@/lib/forecast/clustering";
 import { computeCompositeForecast } from "@/lib/forecast/composite";
 import { computeQualityScore } from "@/lib/forecast/quality";
-import { seedClusters } from "@/lib/config/clusters";
+import { assignDeterministicCluster } from "@/lib/forecast/clustering";
+import { buildForecastCurrentPayload, writeForecastCurrent } from "@/lib/processing/cache";
 
 export type IngestionSummary = {
   connectors: Array<{ sourcePlatform: string; fetched: number; errors: string[] }>;
@@ -27,7 +27,6 @@ export async function runIngestion(options: {
   const connectors = options.connectors ?? getEnabledConnectors();
   const now = options.now ?? new Date();
 
-  await ensureVectorExtension();
   await seedForecastClusters(db);
 
   const summary: IngestionSummary = {
@@ -39,142 +38,98 @@ export async function runIngestion(options: {
   };
 
   for (const connector of connectors) {
+    const run = await db.ingestionRun.create({
+      data: {
+        sourcePlatform: connector.sourcePlatform,
+        status: IngestionRunStatus.RUNNING,
+        errors: []
+      }
+    });
+
+    let fetched = 0;
+    let upserted = 0;
+    let snapshots = 0;
+    let warnings = 0;
+    const errors: string[] = [];
+
     try {
       const markets = await connector.fetchMarkets();
-      summary.connectors.push({ sourcePlatform: connector.sourcePlatform, fetched: markets.length, errors: [] });
-
-      // Compute semantic embeddings for ALL fetched markets (this replaces keyword matching entirely)
-      const textsForEmbed = markets.map((m) => `${m.question} ${m.eventTitle ?? ""}`.trim());
-      let embeddings: number[][] = [];
-      try {
-        embeddings = await embedTexts(textsForEmbed);
-      } catch (e) {
-        console.warn("[ingest] Embedding generation failed for batch, falling back to per-item:", (e as Error).message);
-        embeddings = await Promise.all(markets.map(async (m) => {
-          try { return await getMarketEmbedding(m); } catch { return new Array(EMBEDDING_DIM).fill(0); }
-        }));
-      }
-      markets.forEach((m, i) => { m.embedding = embeddings[i]; });
+      fetched = markets.length;
 
       for (const market of markets) {
         const result = await persistMarketObservation(db, market, now);
-        summary.upsertedMarkets += 1;
-        summary.snapshots += 1;
-        summary.warnings += result.warningCount;
+        upserted += 1;
+        snapshots += 1;
+        warnings += result.warningCount;
       }
     } catch (error) {
-      summary.connectors.push({
-        sourcePlatform: connector.sourcePlatform,
-        fetched: 0,
-        errors: [error instanceof Error ? error.message : String(error)]
-      });
+      errors.push(error instanceof Error ? error.message : String(error));
     }
-  }
 
-  summary.composites = await recomputeClusterForecasts(db);
-
-  // Dynamic semantic event discovery — the heart of general "gather related markets"
-  try {
-    const recentWithEmb = await db.normalizedMarket.findMany({
-      where: {
-        resolutionStatus: { notIn: ["RESOLVED", "CLOSED"] as any },
-      },
-      select: { id: true, question: true, eventTitle: true, embedding: true, liquidity: true, volume: true },
-      take: 400,
-      orderBy: { lastUpdated: "desc" }
+    await db.ingestionRun.update({
+      where: { id: run.id },
+      data: {
+        status: errors.length ? IngestionRunStatus.FAILED : IngestionRunStatus.SUCCESS,
+        fetchedCount: fetched,
+        upsertedCount: upserted,
+        snapshotCount: snapshots,
+        warningCount: warnings,
+        errors,
+        completedAt: new Date()
+      }
     });
 
-    const discovered = await discoverSemanticEvents(db, recentWithEmb as any);
-    if (discovered > 0) {
-      console.log(`[ingest] Discovered and created ${discovered} new semantic event clusters`);
-      await recomputeClusterForecasts(db);
-    }
-  } catch (e) {
-    console.warn("[ingest] Dynamic discovery non-fatal error:", (e as Error).message);
+    summary.connectors.push({ sourcePlatform: connector.sourcePlatform, fetched, errors });
+    summary.upsertedMarkets += upserted;
+    summary.snapshots += snapshots;
+    summary.warnings += warnings;
   }
+
+  summary.composites = await recomputeClusterForecasts(db, now);
 
   return summary;
 }
 
 async function seedForecastClusters(db: PrismaClient): Promise<void> {
   for (const cluster of seedClusters) {
-    const rec = await db.forecastCluster.upsert({
+    await db.forecastCluster.upsert({
       where: { slug: cluster.slug },
       create: {
         slug: cluster.slug,
         title: cluster.title,
         category: cluster.category,
-        description: cluster.description
+        description: cluster.description,
+        isSeed: true
       },
       update: {
         title: cluster.title,
         category: cluster.category,
-        description: cluster.description
+        description: cluster.description,
+        isSeed: true
       }
     });
-
-    // Persist cluster prototype embedding (Float[])
-    try {
-      const emb = await getClusterEmbedding(cluster);
-      if (emb?.length === EMBEDDING_DIM) {
-        await db.$executeRaw`
-          UPDATE "ForecastCluster" SET embedding = ${JSON.stringify(emb)}::jsonb
-          WHERE id = ${rec.id}
-        `;
-      }
-    } catch (e) {
-      // non-fatal
-    }
   }
 }
 
-async function persistMarketObservation(db: PrismaClient, input: NormalizedMarketInput, now: Date): Promise<{ warningCount: number }> {
+async function persistMarketObservation(
+  db: PrismaClient,
+  input: NormalizedMarketInput,
+  now: Date
+): Promise<{ warningCount: number }> {
+  const sourceId = input.sourceMarketId;
   const market = await db.normalizedMarket.upsert({
     where: {
-      sourcePlatform_sourceMarketId: {
+      sourcePlatform_sourceId: {
         sourcePlatform: input.sourcePlatform,
-        sourceMarketId: input.sourceMarketId
+        sourceId
       }
     },
     create: {
-      ...input,
-      rawPayload: input.rawPayload as object
+      ...marketData(input),
+      sourceId
     },
-    update: {
-      sourceSlug: input.sourceSlug,
-      question: input.question,
-      eventTitle: input.eventTitle,
-      category: input.category,
-      outcomeType: input.outcomeType,
-      outcomes: input.outcomes,
-      currentProbability: input.currentProbability,
-      bid: input.bid,
-      ask: input.ask,
-      midpoint: input.midpoint,
-      volume: input.volume,
-      liquidity: input.liquidity,
-      openInterest: input.openInterest,
-      tradeCount: input.tradeCount,
-      participantCount: input.participantCount,
-      closeTime: input.closeTime,
-      resolutionStatus: input.resolutionStatus,
-      sourceUrl: input.sourceUrl,
-      lastUpdated: input.lastUpdated,
-      rawPayload: input.rawPayload as object
-    }
+    update: marketData(input)
   });
-
-  // Store semantic embedding as native Float[] (simple, no extension needed)
-  if (input.embedding && input.embedding.length === EMBEDDING_DIM) {
-    try {
-      await db.normalizedMarket.update({
-        where: { id: market.id },
-        data: { embedding: input.embedding as any }
-      });
-    } catch (e) {
-      if (process.env.NODE_ENV !== "production") console.warn("[ingest] Failed to store embedding:", (e as Error).message);
-    }
-  }
 
   const snapshot = await db.marketSnapshot.create({
     data: {
@@ -190,7 +145,7 @@ async function persistMarketObservation(db: PrismaClient, input: NormalizedMarke
       openInterest: input.openInterest,
       tradeCount: input.tradeCount,
       participantCount: input.participantCount,
-      rawPayload: input.rawPayload as object
+      rawPayload: input.rawPayload as Prisma.InputJsonValue
     }
   });
 
@@ -210,23 +165,15 @@ async function persistMarketObservation(db: PrismaClient, input: NormalizedMarke
     }
   });
 
-  // Quality / liquidity / volume gate before semantic assignment (prevents pollution like World Cup markets into election clusters)
-  const liq = input.liquidity ?? 0;
-  const vol = input.volume ?? 0;
-  const isOpen = input.resolutionStatus === 'OPEN' || !input.resolutionStatus;
-  if (quality.score >= 45 && liq >= 5000 && vol >= 10000 && isOpen && input.currentProbability != null) {
-    const marketForAssign = {
+  if (input.resolutionStatus === ResolutionStatus.OPEN && input.currentProbability !== null && input.currentProbability !== undefined) {
+    await assignDeterministicCluster(db, {
       id: market.id,
       sourcePlatform: input.sourcePlatform,
       question: input.question,
       eventTitle: input.eventTitle,
       sourceSlug: input.sourceSlug,
-    };
-    await assignManualClusters(db, marketForAssign as any, input.embedding);
-  } else {
-    if (process.env.NODE_ENV !== "production") {
-      console.log(`[ingest] Skipped assignment for ${input.question} (quality=${quality.score.toFixed(0)}, liq=${liq}, vol=${vol})`);
-    }
+      category: input.category
+    });
   }
 
   const previous24h = await db.marketSnapshot.findFirst({
@@ -236,10 +183,10 @@ async function persistMarketObservation(db: PrismaClient, input: NormalizedMarke
     },
     orderBy: { observedAt: "desc" }
   });
-  const warnings = detectSignalWarnings(snapshot, previous24h, input.lastUpdated, now);
-  if (warnings.length) {
+  const warningInputs = detectSignalWarnings(snapshot, previous24h, input.lastUpdated, now);
+  if (warningInputs.length) {
     await db.signalWarning.createMany({
-      data: warnings.map((warning) => ({
+      data: warningInputs.map((warning) => ({
         marketId: market.id,
         sourcePlatform: input.sourcePlatform,
         type: warning.type,
@@ -251,73 +198,50 @@ async function persistMarketObservation(db: PrismaClient, input: NormalizedMarke
     });
   }
 
-  return { warningCount: warnings.length };
+  return { warningCount: warningInputs.length };
 }
 
-async function assignManualClusters(
-  db: PrismaClient,
-  market: Parameters<typeof matchingSeedClusters>[0] & { id: string },
-  providedEmbedding?: number[]
-): Promise<void> {
-  // Pass embedding through for pure semantic matching (no more keywords)
-  const marketForMatch = {
-    ...market,
-    embedding: providedEmbedding || (market as any).embedding
+function marketData(input: NormalizedMarketInput) {
+  return {
+    sourcePlatform: input.sourcePlatform,
+    sourceMarketId: input.sourceMarketId,
+    sourceSlug: input.sourceSlug,
+    question: input.question,
+    marketType: input.outcomeType,
+    eventTitle: input.eventTitle,
+    category: input.category,
+    outcomeType: input.outcomeType,
+    outcomes: input.outcomes as Prisma.InputJsonValue,
+    currentProbability: input.currentProbability,
+    bid: input.bid,
+    ask: input.ask,
+    midpoint: input.midpoint,
+    volume: input.volume,
+    liquidity: input.liquidity,
+    openInterest: input.openInterest,
+    tradeCount: input.tradeCount,
+    participantCount: input.participantCount,
+    closeTime: input.closeTime,
+    resolutionStatus: input.resolutionStatus,
+    sourceUrl: input.sourceUrl,
+    lastUpdated: input.lastUpdated,
+    rawPayload: input.rawPayload as Prisma.InputJsonValue
   };
-
-  const matches = await matchingSeedClusters(marketForMatch as any);
-
-  const seededClusters = await db.forecastCluster.findMany({
-    where: { slug: { in: seedClusters.map((cluster) => cluster.slug) } },
-    select: { id: true, slug: true }
-  });
-  const matchedSlugs = new Set(matches.map((match) => match.slug));
-  const unmatchedSeededIds = seededClusters.filter((cluster) => !matchedSlugs.has(cluster.slug)).map((cluster) => cluster.id);
-
-  if (unmatchedSeededIds.length) {
-    await db.clusterMarket.deleteMany({
-      where: {
-        marketId: market.id,
-        clusterId: { in: unmatchedSeededIds }
-      }
-    });
-  }
-
-  for (const seed of matches) {
-    const cluster = await db.forecastCluster.findUnique({ where: { slug: seed.slug } });
-    if (!cluster) continue;
-    await db.clusterMarket.upsert({
-      where: {
-        clusterId_marketId: {
-          clusterId: cluster.id,
-          marketId: market.id
-        }
-      },
-      create: {
-        clusterId: cluster.id,
-        marketId: market.id,
-        sourcePlatform: market.sourcePlatform,
-        weightOverride: seed.weightOverride ?? null
-      },
-      update: {
-        sourcePlatform: market.sourcePlatform,
-        weightOverride: seed.weightOverride ?? null
-      }
-    });
-  }
 }
 
-export async function recomputeClusterForecasts(db: PrismaClient = defaultPrisma): Promise<number> {
+export async function recomputeClusterForecasts(
+  db: PrismaClient = defaultPrisma,
+  processedAt = new Date()
+): Promise<number> {
   const clusters = await db.forecastCluster.findMany({
     include: {
       markets: {
         include: {
           market: {
             include: {
-              qualityScores: {
-                orderBy: { computedAt: "desc" },
-                take: 1
-              }
+              snapshots: { orderBy: { observedAt: "desc" }, take: 2 },
+              signalWarnings: { orderBy: { observedAt: "desc" }, take: 10 },
+              qualityScores: { orderBy: { computedAt: "desc" }, take: 1 }
             }
           }
         }
@@ -327,6 +251,8 @@ export async function recomputeClusterForecasts(db: PrismaClient = defaultPrisma
 
   let count = 0;
   for (const cluster of clusters) {
+    if (!cluster.markets.length) continue;
+
     const composite = computeCompositeForecast(
       cluster.markets.map((membership) => {
         const latestQuality = membership.market.qualityScores[0];
@@ -342,18 +268,43 @@ export async function recomputeClusterForecasts(db: PrismaClient = defaultPrisma
       })
     );
 
-    if (!cluster.markets.length) continue;
     await db.compositeForecast.create({
       data: {
         clusterId: cluster.id,
-        compositeProbability: composite.compositeProbability,
-        confidence: composite.confidence,
-        qualityScore: composite.qualityScore,
-        sourceBreakdown: composite.sourceBreakdown
+        compositeValue: composite.compositeProbability,
+        confidenceScore: composite.qualityScore,
+        sourceBreakdown: composite.sourceBreakdown as Prisma.InputJsonValue,
+        createdAt: processedAt
       }
     });
+
+    await writeForecastCurrent(
+      db,
+      buildForecastCurrentPayload({
+        clusterId: cluster.id,
+        composite,
+        marketCount: cluster.markets.length,
+        warningCount: cluster.markets.reduce((sum, membership) => sum + membership.market.signalWarnings.length, 0),
+        move24h: estimateClusterMove(cluster.markets.map((membership) => membership.market.snapshots)),
+        processedAt
+      })
+    );
+
     count += 1;
   }
 
   return count;
+}
+
+function estimateClusterMove(snapshotsByMarket: Array<Array<{ currentProbability: number | null }>>): number | null {
+  const deltas = snapshotsByMarket
+    .map((snapshots) => {
+      const latest = snapshots[0]?.currentProbability;
+      const previous = snapshots[1]?.currentProbability;
+      return latest !== null && latest !== undefined && previous !== null && previous !== undefined ? latest - previous : null;
+    })
+    .filter((delta): delta is number => delta !== null);
+
+  if (!deltas.length) return null;
+  return deltas.reduce((sum, delta) => sum + delta, 0) / deltas.length;
 }

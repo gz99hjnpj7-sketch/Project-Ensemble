@@ -32,6 +32,12 @@ Open `http://localhost:3000`.
 
 The Polymarket connector uses public Gamma and CLOB read endpoints only. There are no trading, wallet, authenticated, or AI provider flows in v1.
 
+The app is split into three internal layers:
+
+- Raw data: connectors fetch source markets and ingestion stores normalized markets plus raw snapshot payloads.
+- Processing/cache: deterministic matching, quality scoring, warning detection, and composite calculation write cached current forecasts.
+- Frontend/API: pages and JSON routes read already-processed forecast cache rows only.
+
 ## Keeping Changes in Sync with GitHub
 
 This project is **not** automatically synced to GitHub.

@@ -9,33 +9,3 @@ export const prisma =
   });
 
 if (process.env.NODE_ENV !== "production") globalForPrisma.prisma = prisma;
-
-/**
- * Ensures pgvector extension is available (safe to call multiple times).
- * Also defensively ensures embedding columns exist.
- * Call during ingestion startup or app boot in dev.
- */
-export async function ensureVectorExtension(): Promise<void> {
-  try {
-    await prisma.$executeRawUnsafe(`CREATE EXTENSION IF NOT EXISTS vector;`);
-  } catch (e) {
-    if (process.env.NODE_ENV !== "production") {
-      console.warn("[prisma] Could not ensure vector extension (may already exist or no perms):", (e as Error).message);
-    }
-  }
-
-  // Add columns if the schema was updated without a full migration
-  try {
-    // JSON array for embeddings (portable, no extension)
-    await prisma.$executeRawUnsafe(
-      `ALTER TABLE "NormalizedMarket" ADD COLUMN IF NOT EXISTS embedding JSON;`
-    );
-    await prisma.$executeRawUnsafe(
-      `ALTER TABLE "ForecastCluster" ADD COLUMN IF NOT EXISTS embedding JSON;`
-    );
-  } catch (e) {
-    if (process.env.NODE_ENV !== "production") {
-      // Expected if column exists
-    }
-  }
-}

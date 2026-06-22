@@ -9,58 +9,44 @@ export type ForecastListFilters = {
 };
 
 export async function getForecastList(filters: ForecastListFilters = {}) {
-  const clusters = await prisma.forecastCluster.findMany({
+  const currents = await prisma.forecastCurrent.findMany({
     where: {
-      category: filters.category && filters.category !== "ALL" ? (filters.category as Prisma.EnumForecastCategoryFilter["equals"]) : undefined,
-      title: filters.query ? { contains: filters.query, mode: "insensitive" } : undefined
-    },
-    include: {
-      compositeForecasts: { orderBy: { computedAt: "desc" }, take: 1 },
-      markets: {
-        include: {
-          market: {
-            include: {
-              snapshots: { orderBy: { observedAt: "desc" }, take: 2 },
-              signalWarnings: { orderBy: { observedAt: "desc" }, take: 10 },
-              qualityScores: { orderBy: { computedAt: "desc" }, take: 1 }
-            }
-          }
-        }
+      confidence: filters.confidence && filters.confidence !== "ALL" ? (filters.confidence as Prisma.EnumSignalConfidenceFilter["equals"]) : undefined,
+      warningCount: filters.warningsOnly ? { gt: 0 } : undefined,
+      cluster: {
+        category: filters.category && filters.category !== "ALL" ? (filters.category as Prisma.EnumForecastCategoryFilter["equals"]) : undefined,
+        title: filters.query ? { contains: filters.query, mode: "insensitive" } : undefined
       }
     },
-    orderBy: [{ category: "asc" }, { title: "asc" }]
+    include: {
+      cluster: true
+    },
+    orderBy: [{ marketCount: "desc" }, { compositeValue: "desc" }, { processedAt: "desc" }]
   });
 
-  return clusters
-    .map((cluster) => {
-      const latest = cluster.markets.length ? cluster.compositeForecasts[0] ?? null : null;
-      const warningCount = cluster.markets.reduce((sum, membership) => sum + membership.market.signalWarnings.length, 0);
-      const move24h = estimateClusterMove(cluster.markets.map((membership) => membership.market.snapshots));
-      return {
-        id: cluster.id,
-        slug: cluster.slug,
-        title: cluster.title,
-        category: cluster.category,
-        description: cluster.description,
-        compositeProbability: latest?.compositeProbability ?? null,
-        confidence: latest?.confidence ?? "LOW",
-        qualityScore: latest?.qualityScore ?? 0,
-        sourceBreakdown: latest?.sourceBreakdown ?? [],
-        computedAt: latest?.computedAt ?? null,
-        marketCount: cluster.markets.length,
-        warningCount,
-        move24h
-      };
-    })
-    .filter((forecast) => (filters.confidence && filters.confidence !== "ALL" ? forecast.confidence === filters.confidence : true))
-    .filter((forecast) => (filters.warningsOnly ? forecast.warningCount > 0 : true));
+  return currents.map((current) => ({
+    id: current.cluster.id,
+    slug: current.cluster.slug,
+    title: current.cluster.title,
+    category: current.cluster.category,
+    description: current.cluster.description,
+    compositeProbability: current.compositeValue,
+    confidence: current.confidence,
+    qualityScore: current.confidenceScore,
+    sourceBreakdown: current.sourceBreakdown,
+    computedAt: current.processedAt,
+    marketCount: current.marketCount,
+    warningCount: current.warningCount,
+    move24h: current.move24h
+  }));
 }
 
 export async function getForecastDetail(idOrSlug: string) {
   const cluster = await prisma.forecastCluster.findFirst({
     where: { OR: [{ id: idOrSlug }, { slug: idOrSlug }] },
     include: {
-      compositeForecasts: { orderBy: { computedAt: "desc" }, take: 50 },
+      currentForecast: true,
+      compositeForecasts: { orderBy: { createdAt: "desc" }, take: 50 },
       markets: {
         include: {
           market: {
@@ -76,19 +62,20 @@ export async function getForecastDetail(idOrSlug: string) {
   });
   if (!cluster) return null;
 
-  const result = {
+  return {
     id: cluster.id,
     slug: cluster.slug,
     title: cluster.title,
     category: cluster.category,
     description: cluster.description,
+    current: cluster.currentForecast,
     latestComposite: cluster.compositeForecasts[0] ?? null,
     compositeHistory: [...cluster.compositeForecasts]
       .reverse()
       .map((forecast) => ({
-        observedAt: forecast.computedAt.toISOString(),
-        probability: forecast.compositeProbability,
-        qualityScore: forecast.qualityScore
+        observedAt: forecast.createdAt.toISOString(),
+        probability: forecast.compositeValue,
+        qualityScore: forecast.confidenceScore ?? 0
       })),
     markets: cluster.markets.map((membership) => ({
       id: membership.market.id,
@@ -112,57 +99,17 @@ export async function getForecastDetail(idOrSlug: string) {
         liquidity: snapshot.liquidity,
         volume: snapshot.volume
       }))
-    }))
+    })),
+    topMarketSeries: cluster.markets
+      .map((membership) => membership.market)
+      .sort((a, b) => (b.currentProbability || 0) - (a.currentProbability || 0))
+      .slice(0, 4)
+      .map((market) => ({
+        name: market.question.length > 40 ? market.question.slice(0, 37) + "..." : market.question,
+        data: market.snapshots.map((snapshot) => ({
+          observedAt: snapshot.observedAt.toISOString(),
+          probability: snapshot.currentProbability
+        }))
+      }))
   };
-
-  // For election-style clusters, group by event and take top 5 by probability per event.
-  // This makes 63 markets more concise and sensible (top per race) while showing the spread.
-  if (result.slug === "us-presidential-election" && result.markets.length > 5) {
-    const byEvent: Record<string, typeof result.markets> = {};
-    for (const m of result.markets) {
-      const key = m.eventTitle || 'Other';
-      if (!byEvent[key]) byEvent[key] = [];
-      byEvent[key].push(m);
-    }
-    let selected: typeof result.markets = [];
-    for (const ev of Object.keys(byEvent)) {
-      const top = byEvent[ev]
-        .sort((a, b) => (b.probability || 0) - (a.probability || 0))
-        .slice(0, 5);
-      selected.push(...top);
-    }
-    result.markets = selected.sort((a, b) => (b.probability || 0) - (a.probability || 0));
-
-    if (result.latestComposite?.sourceBreakdown && Array.isArray(result.latestComposite.sourceBreakdown)) {
-      (result.latestComposite as any).sourceBreakdown = (result.latestComposite as any).sourceBreakdown
-        .sort((a: any, b: any) => (b.probability || 0) - (a.probability || 0))
-        .slice(0, 15);
-    }
-  }
-
-  // Prepare additional series for the chart: top 4 markets' probability histories (for multi-line graph)
-  const topForChart = [...result.markets]
-    .sort((a, b) => (b.probability || 0) - (a.probability || 0))
-    .slice(0, 4);
-  (result as any).topMarketSeries = topForChart.map(m => ({
-    name: m.question.length > 40 ? m.question.slice(0, 37) + '...' : m.question,
-    data: m.snapshots.map(s => ({
-      observedAt: s.observedAt,
-      probability: s.probability
-    }))
-  }));
-
-  return result;
-}
-
-function estimateClusterMove(snapshotsByMarket: Array<Array<{ currentProbability: number | null }>>): number | null {
-  const deltas = snapshotsByMarket
-    .map((snapshots) => {
-      const latest = snapshots[0]?.currentProbability;
-      const previous = snapshots[1]?.currentProbability;
-      return latest !== null && latest !== undefined && previous !== null && previous !== undefined ? latest - previous : null;
-    })
-    .filter((delta): delta is number => delta !== null);
-  if (!deltas.length) return null;
-  return deltas.reduce((sum, delta) => sum + delta, 0) / deltas.length;
 }

@@ -9,10 +9,9 @@ export type SeedCluster = {
 };
 
 /**
- * High-quality semantic seed clusters.
- * These are used as embedding prototypes (title + description).
- * Pure semantic matching via cosine similarity on Gemini embeddings.
- * Expanded to cover the main future-event domains.
+ * High-quality deterministic seed clusters.
+ * Processing rules in lib/processing/matcher.ts map source markets to these
+ * clusters without AI or external embedding calls.
  */
 export const seedClusters: SeedCluster[] = [
   // === POLITICS ===

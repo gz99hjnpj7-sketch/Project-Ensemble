@@ -65,7 +65,9 @@ export default async function Home({ searchParams }: { searchParams: SearchParam
 
                         </Link>
                       </td>
-                      <td className="prob">{forecast.marketCount > 0 ? formatProbability(forecast.compositeProbability) : '—'}
+                      <td className="prob">
+                        {forecast.marketCount > 0 ? formatProbability(forecast.compositeProbability) : '—'}
+                        <span className="pill" style={{marginLeft:4, fontSize:'10px'}}>Q{forecast.qualityScore || 0}</span>
                       </td>
                       <td className={moveClass(forecast.move24h)}>{formatMove(forecast.move24h)}</td>
                       <td><ConfidencePill confidence={forecast.confidence} /></td>
