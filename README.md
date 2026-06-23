@@ -1,16 +1,16 @@
-# Project Ensemble: Future News
+# Ensemble 2
 
-Project Ensemble is a multi-market forecast intelligence terminal. This MVP ships one connector, Polymarket, while keeping the schema, ingestion path, scoring, and UI source-aware for future Kalshi and Manifold connectors.
+Ensemble 2 is a focused forecast-market pipeline. It collects prediction-market prices, matches them to a small set of important seed events, combines clean sources into one number, and shows what that number means.
 
-## Stack
+The active seed clusters are:
 
-- Next.js App Router + TypeScript
-- Postgres + Prisma
-- Scheduled TypeScript ingestion worker
-- Recharts dashboard visualizations
-- Vitest unit and component tests
+- US Presidential Election 2028
+- Federal Reserve Rate Path
+- US 2026 Midterms
+- Frontier AI Timeline
+- Bitcoin Price Milestones
 
-## Local Setup
+## Local Run
 
 ```bash
 npm install
@@ -19,42 +19,30 @@ docker compose up -d
 npm run prisma:generate
 npm run prisma:migrate
 npm run prisma:seed
-npm run worker:ingest
 npm run dev
 ```
 
 Open `http://localhost:3000`.
 
-## Workers
-
-- `npm run worker:ingest` runs one ingestion pass.
-- `npm run worker:schedule` runs immediately and then every `INGEST_INTERVAL_MINUTES`, defaulting to 30 minutes.
-
-The Polymarket connector uses public Gamma and CLOB read endpoints only. There are no trading, wallet, authenticated, or AI provider flows in v1.
-
-The app is split into three internal layers:
-
-- Raw data: connectors fetch source markets and ingestion stores normalized markets plus raw snapshot payloads.
-- Processing/cache: deterministic matching, quality scoring, warning detection, and composite calculation write cached current forecasts.
-- Frontend/API: pages and JSON routes read already-processed forecast cache rows only.
-
-## Keeping Changes in Sync with GitHub
-
-This project is **not** automatically synced to GitHub.
-
-### Recommended: VS Code Source Control panel
-
-1. Open the **Source Control** sidebar (left icon or `Ctrl+Shift+G`).
-2. Review your changes.
-3. Write a commit message and click **Commit**.
-4. Click **Sync Changes** (cloud icon) — this commits + pushes in one step.
-
-### Occasional manual sync from terminal
+## Data Refresh
 
 ```bash
-npm run git:sync
+npm run worker:ingest
 ```
 
-In GitHub Codespaces, `git push` works without extra authentication thanks to the built-in credential helper.
+The ingestion worker creates an `IngestionRun`, writes market snapshots, records match decisions including unmatched markets, recomputes composite forecasts, and updates the derived `ForecastCurrent` cache.
 
-The `.gitignore` already protects `.env`, `node_modules`, `.next`, etc. Commit frequently with clear messages when possible.
+## Repository Layout
+
+Ensemble 2 is now the main app at the repository root. The previous root version is preserved under `archive/ensemble-v1` for reference only.
+
+## Architecture
+
+See `WORKFLOW.md` for the plain-English layer map.
+
+- Raw data: `ensemble/connectors`
+- Matching: `ensemble/matching`
+- Processing: `ensemble/quality`, `ensemble/composite`, `ensemble/ingestion`
+- Frontend: `app`, `components`, `ensemble/serving`
+
+Temporarily disabled: dynamic cluster creation, LLM classification/synthesis, warning-based composite filters, and move calculations.

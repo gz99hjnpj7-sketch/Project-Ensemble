@@ -78,7 +78,7 @@ select {
 
 .toolbar {
   display: grid;
-  grid-template-columns: 1fr 160px 160px auto;
+  grid-template-columns: 1fr 160px 160px;
   gap: 10px;
   align-items: center;
 }
@@ -142,7 +142,7 @@ tr:hover td {
 
 .eventCell {
   display: grid;
-  gap: 4px;
+  gap: 6px;
 }
 
 .eventTitle {
@@ -243,6 +243,39 @@ tr:hover td {
   margin: 0;
   padding-left: 18px;
   color: var(--yellow);
+}
+
+.sourceDetails {
+  max-width: 760px;
+}
+
+.sourceDetails summary {
+  cursor: pointer;
+  color: var(--cyan);
+  font-size: 13px;
+}
+
+.sourceList {
+  display: grid;
+  gap: 8px;
+  margin-top: 8px;
+  padding: 10px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: var(--surface-2);
+}
+
+.sourceRow {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 12px;
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.sourceTitle {
+  color: var(--text);
+  margin-bottom: 4px;
 }
 
 .empty {

@@ -1,13 +1,12 @@
 import { NextResponse } from "next/server";
-import { getForecastList } from "@/lib/forecast/read-models";
+import { getForecastDashboard } from "@/ensemble/serving/read-models";
 
 export async function GET(request: Request) {
   const url = new URL(request.url);
-  const forecasts = await getForecastList({
+  const dashboard = await getForecastDashboard({
     query: url.searchParams.get("q"),
     category: url.searchParams.get("category"),
-    confidence: url.searchParams.get("confidence"),
-    warningsOnly: url.searchParams.get("warnings") === "1"
+    confidence: url.searchParams.get("confidence")
   });
-  return NextResponse.json({ forecasts });
+  return NextResponse.json(dashboard);
 }

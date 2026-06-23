@@ -1,5 +1,5 @@
 {
-  "name": "ensemble-2",
+  "name": "future-news",
   "version": "0.1.0",
   "private": true,
   "scripts": {
@@ -18,7 +18,6 @@
     "git:sync": "bash scripts/git-sync.sh"
   },
   "dependencies": {
-    "@google/generative-ai": "^0.24.1",
     "@prisma/client": "^6.1.0",
     "clsx": "^2.1.1",
     "date-fns": "^4.1.0",

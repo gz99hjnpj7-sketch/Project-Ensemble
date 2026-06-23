@@ -1,0 +1,222 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+enum SourcePlatform {
+  POLYMARKET
+  KALSHI
+  MANIFOLD
+}
+
+enum ForecastCategory {
+  POLITICS
+  MACRO
+  CRYPTO
+  WORLD
+  OTHER
+}
+
+enum OutcomeType {
+  BINARY
+  MULTIPLE_CHOICE
+  SCALAR
+}
+
+enum ResolutionStatus {
+  OPEN
+  RESOLVED
+  CLOSED
+  CANCELLED
+  UNKNOWN
+}
+
+enum SignalConfidence {
+  HIGH
+  MEDIUM
+  LOW
+}
+
+enum WarningType {
+  LARGE_MOVE
+  LOW_LIQUIDITY_MOVE
+  WIDE_SPREAD
+  STALE_MARKET
+}
+
+enum IngestionRunStatus {
+  RUNNING
+  SUCCESS
+  FAILED
+}
+
+model IngestionRun {
+  id             String             @id @default(cuid())
+  sourcePlatform SourcePlatform
+  status         IngestionRunStatus @default(RUNNING)
+  fetchedCount   Int                @default(0)
+  upsertedCount  Int                @default(0)
+  snapshotCount  Int                @default(0)
+  warningCount   Int                @default(0)
+  errors         Json
+  startedAt      DateTime           @default(now())
+  completedAt    DateTime?
+
+  @@index([sourcePlatform, startedAt])
+  @@index([status])
+}
+
+model NormalizedMarket {
+  id                 String               @id @default(cuid())
+  sourcePlatform     SourcePlatform
+  sourceMarketId     String
+  sourceId           String
+  sourceSlug         String?
+  question           String
+  marketType         String               @default("BINARY")
+  eventTitle         String
+  category           ForecastCategory     @default(OTHER)
+  outcomeType        OutcomeType          @default(BINARY)
+  outcomes           Json
+  currentProbability Float?
+  bid                Float?
+  ask                Float?
+  midpoint           Float?
+  volume             Float?
+  liquidity          Float?
+  openInterest       Float?
+  tradeCount         Int?
+  participantCount   Int?
+  closeTime          DateTime?
+  resolutionStatus   ResolutionStatus     @default(UNKNOWN)
+  sourceUrl          String?
+  lastUpdated        DateTime
+  rawPayload         Json
+  createdAt          DateTime             @default(now())
+  updatedAt          DateTime             @updatedAt
+  snapshots          MarketSnapshot[]
+  qualityScores      MarketQualityScore[]
+  clusterMemberships ClusterMarket[]
+  signalWarnings     SignalWarning[]
+
+  @@unique([sourcePlatform, sourceId])
+  @@index([sourcePlatform, sourceSlug])
+  @@index([category])
+  @@index([lastUpdated])
+}
+
+model MarketSnapshot {
+  id                 String           @id @default(cuid())
+  marketId           String
+  market             NormalizedMarket @relation(fields: [marketId], references: [id], onDelete: Cascade)
+  sourcePlatform     SourcePlatform
+  observedAt         DateTime         @default(now())
+  currentProbability Float?
+  bid                Float?
+  ask                Float?
+  midpoint           Float?
+  volume             Float?
+  liquidity          Float?
+  openInterest       Float?
+  tradeCount         Int?
+  participantCount   Int?
+  rawPayload         Json
+
+  @@index([marketId, observedAt])
+  @@index([sourcePlatform, observedAt])
+}
+
+model ForecastCluster {
+  id                 String              @id @default(cuid())
+  slug               String              @unique
+  title              String
+  category           ForecastCategory
+  description        String?
+  isSeed             Boolean             @default(false)
+  createdAt          DateTime            @default(now())
+  updatedAt          DateTime            @updatedAt
+  markets            ClusterMarket[]
+  compositeForecasts CompositeForecast[]
+  currentForecast    ForecastCurrent?
+}
+
+model ClusterMarket {
+  id             String           @id @default(cuid())
+  clusterId      String
+  cluster        ForecastCluster  @relation(fields: [clusterId], references: [id], onDelete: Cascade)
+  marketId       String
+  market         NormalizedMarket @relation(fields: [marketId], references: [id], onDelete: Cascade)
+  sourcePlatform SourcePlatform
+  relationship   String           @default("deterministic")
+  weightOverride Float?
+  createdAt      DateTime         @default(now())
+
+  @@unique([clusterId, marketId])
+  @@index([sourcePlatform])
+}
+
+model MarketQualityScore {
+  id             String           @id @default(cuid())
+  marketId       String
+  market         NormalizedMarket @relation(fields: [marketId], references: [id], onDelete: Cascade)
+  score          Float
+  confidence     SignalConfidence
+  flags          Json
+  liquidityScore Float
+  spreadScore    Float
+  volumeScore    Float
+  recencyScore   Float
+  marketAgeScore Float
+  computedAt     DateTime         @default(now())
+
+  @@index([marketId, computedAt])
+}
+
+model CompositeForecast {
+  id              String          @id @default(cuid())
+  clusterId       String
+  cluster         ForecastCluster @relation(fields: [clusterId], references: [id], onDelete: Cascade)
+  compositeValue  Float?
+  confidenceScore Float?
+  sourceBreakdown Json
+  createdAt       DateTime        @default(now())
+
+  @@index([clusterId, createdAt])
+}
+
+model ForecastCurrent {
+  id              String           @id @default(cuid())
+  clusterId       String           @unique
+  cluster         ForecastCluster  @relation(fields: [clusterId], references: [id], onDelete: Cascade)
+  compositeValue  Float?
+  confidence      SignalConfidence
+  confidenceScore Float
+  marketCount     Int
+  warningCount    Int
+  move24h         Float?
+  sourceBreakdown Json
+  processedAt     DateTime
+  updatedAt       DateTime         @updatedAt
+
+  @@index([confidence])
+  @@index([processedAt])
+}
+
+model SignalWarning {
+  id             String           @id @default(cuid())
+  marketId       String
+  market         NormalizedMarket @relation(fields: [marketId], references: [id], onDelete: Cascade)
+  sourcePlatform SourcePlatform
+  type           WarningType
+  message        String
+  severity       SignalConfidence
+  observedAt     DateTime         @default(now())
+  metadata       Json
+
+  @@index([marketId, observedAt])
+  @@index([type])
+}

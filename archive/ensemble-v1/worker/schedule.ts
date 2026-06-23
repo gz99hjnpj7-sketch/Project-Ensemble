@@ -1,4 +1,4 @@
-import { runIngestion } from "@/ensemble/ingestion/run";
+import { runIngestion } from "@/lib/ingestion/run";
 
 const intervalMinutes = Number(process.env.INGEST_INTERVAL_MINUTES ?? 30);
 const intervalMs = intervalMinutes * 60_000;

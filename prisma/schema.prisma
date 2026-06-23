@@ -50,60 +50,61 @@ enum WarningType {
 
 enum IngestionRunStatus {
   RUNNING
-  SUCCESS
+  SUCCEEDED
+  PARTIAL
   FAILED
 }
 
-model IngestionRun {
-  id             String             @id @default(cuid())
-  sourcePlatform SourcePlatform
-  status         IngestionRunStatus @default(RUNNING)
-  fetchedCount   Int                @default(0)
-  upsertedCount  Int                @default(0)
-  snapshotCount  Int                @default(0)
-  warningCount   Int                @default(0)
-  errors         Json
-  startedAt      DateTime           @default(now())
-  completedAt    DateTime?
+enum MatchMethod {
+  DETERMINISTIC
+  SEMANTIC
+}
 
-  @@index([sourcePlatform, startedAt])
-  @@index([status])
+enum MatchOutcome {
+  MATCHED
+  UNMATCHED
+}
+
+enum ConfidenceBand {
+  TIGHT
+  NORMAL
+  WIDE
 }
 
 model NormalizedMarket {
-  id                 String               @id @default(cuid())
-  sourcePlatform     SourcePlatform
-  sourceMarketId     String
-  sourceId           String
-  sourceSlug         String?
-  question           String
-  marketType         String               @default("BINARY")
-  eventTitle         String
-  category           ForecastCategory     @default(OTHER)
-  outcomeType        OutcomeType          @default(BINARY)
-  outcomes           Json
-  currentProbability Float?
-  bid                Float?
-  ask                Float?
-  midpoint           Float?
-  volume             Float?
-  liquidity          Float?
-  openInterest       Float?
-  tradeCount         Int?
-  participantCount   Int?
-  closeTime          DateTime?
-  resolutionStatus   ResolutionStatus     @default(UNKNOWN)
-  sourceUrl          String?
-  lastUpdated        DateTime
-  rawPayload         Json
-  createdAt          DateTime             @default(now())
-  updatedAt          DateTime             @updatedAt
-  snapshots          MarketSnapshot[]
-  qualityScores      MarketQualityScore[]
-  clusterMemberships ClusterMarket[]
-  signalWarnings     SignalWarning[]
+  id                  String               @id @default(cuid())
+  sourcePlatform      SourcePlatform
+  sourceMarketId      String
+  sourceSlug          String?
+  question            String
+  eventTitle          String
+  category            ForecastCategory     @default(OTHER)
+  outcomeType         OutcomeType          @default(BINARY)
+  outcomes            Json
+  currentProbability  Float?
+  bid                 Float?
+  ask                 Float?
+  midpoint            Float?
+  volume              Float?
+  liquidity           Float?
+  openInterest        Float?
+  tradeCount          Int?
+  participantCount    Int?
+  closeTime           DateTime?
+  resolutionStatus    ResolutionStatus     @default(UNKNOWN)
+  sourceUrl           String?
+  lastUpdated         DateTime
+  rawPayload          Json
+  createdAt           DateTime             @default(now())
+  updatedAt           DateTime             @updatedAt
+  embedding           Json?
+  snapshots           MarketSnapshot[]
+  qualityScores       MarketQualityScore[]
+  clusterMemberships  ClusterMarket[]
+  signalWarnings      SignalWarning[]
+  matchDecisions      MatchDecision[]
 
-  @@unique([sourcePlatform, sourceId])
+  @@unique([sourcePlatform, sourceMarketId])
   @@index([sourcePlatform, sourceSlug])
   @@index([category])
   @@index([lastUpdated])
@@ -113,6 +114,8 @@ model MarketSnapshot {
   id                 String           @id @default(cuid())
   marketId           String
   market             NormalizedMarket @relation(fields: [marketId], references: [id], onDelete: Cascade)
+  ingestionRunId     String?
+  ingestionRun       IngestionRun?    @relation(fields: [ingestionRunId], references: [id], onDelete: SetNull)
   sourcePlatform     SourcePlatform
   observedAt         DateTime         @default(now())
   currentProbability Float?
@@ -128,6 +131,7 @@ model MarketSnapshot {
 
   @@index([marketId, observedAt])
   @@index([sourcePlatform, observedAt])
+  @@index([ingestionRunId])
 }
 
 model ForecastCluster {
@@ -136,87 +140,129 @@ model ForecastCluster {
   title              String
   category           ForecastCategory
   description        String?
-  isSeed             Boolean             @default(false)
+  embedding          Json?
   createdAt          DateTime            @default(now())
   updatedAt          DateTime            @updatedAt
   markets            ClusterMarket[]
   compositeForecasts CompositeForecast[]
-  currentForecast    ForecastCurrent?
+  current            ForecastCurrent?
+  matchDecisions     MatchDecision[]
 }
 
 model ClusterMarket {
-  id             String           @id @default(cuid())
-  clusterId      String
-  cluster        ForecastCluster  @relation(fields: [clusterId], references: [id], onDelete: Cascade)
-  marketId       String
-  market         NormalizedMarket @relation(fields: [marketId], references: [id], onDelete: Cascade)
-  sourcePlatform SourcePlatform
-  relationship   String           @default("deterministic")
-  weightOverride Float?
-  createdAt      DateTime         @default(now())
+  id              String           @id @default(cuid())
+  clusterId       String
+  cluster         ForecastCluster  @relation(fields: [clusterId], references: [id], onDelete: Cascade)
+  marketId        String
+  market          NormalizedMarket @relation(fields: [marketId], references: [id], onDelete: Cascade)
+  sourcePlatform  SourcePlatform
+  relationship    String           @default("primary")
+  weightOverride  Float?
+  createdAt       DateTime         @default(now())
 
   @@unique([clusterId, marketId])
   @@index([sourcePlatform])
 }
 
 model MarketQualityScore {
-  id             String           @id @default(cuid())
-  marketId       String
-  market         NormalizedMarket @relation(fields: [marketId], references: [id], onDelete: Cascade)
-  score          Float
-  confidence     SignalConfidence
-  flags          Json
-  liquidityScore Float
-  spreadScore    Float
-  volumeScore    Float
-  recencyScore   Float
-  marketAgeScore Float
-  computedAt     DateTime         @default(now())
+  id                 String           @id @default(cuid())
+  marketId           String
+  market             NormalizedMarket @relation(fields: [marketId], references: [id], onDelete: Cascade)
+  score              Float
+  confidence         SignalConfidence
+  flags              Json
+  liquidityScore     Float
+  spreadScore        Float
+  volumeScore        Float
+  recencyScore       Float
+  marketAgeScore     Float
+  computedAt         DateTime         @default(now())
 
   @@index([marketId, computedAt])
 }
 
 model CompositeForecast {
-  id              String          @id @default(cuid())
-  clusterId       String
-  cluster         ForecastCluster @relation(fields: [clusterId], references: [id], onDelete: Cascade)
-  compositeValue  Float?
-  confidenceScore Float?
-  sourceBreakdown Json
-  createdAt       DateTime        @default(now())
+  id                   String             @id @default(cuid())
+  clusterId            String
+  cluster              ForecastCluster    @relation(fields: [clusterId], references: [id], onDelete: Cascade)
+  compositeProbability Float?
+  confidence           SignalConfidence
+  confidenceBand       ConfidenceBand     @default(NORMAL)
+  qualityScore         Float
+  sourceBreakdown      Json
+  computedAt           DateTime           @default(now())
 
-  @@index([clusterId, createdAt])
+  @@index([clusterId, computedAt])
 }
 
 model ForecastCurrent {
-  id              String           @id @default(cuid())
-  clusterId       String           @unique
-  cluster         ForecastCluster  @relation(fields: [clusterId], references: [id], onDelete: Cascade)
-  compositeValue  Float?
-  confidence      SignalConfidence
-  confidenceScore Float
-  marketCount     Int
-  warningCount    Int
-  move24h         Float?
-  sourceBreakdown Json
-  processedAt     DateTime
-  updatedAt       DateTime         @updatedAt
+  id                   String           @id @default(cuid())
+  clusterId            String           @unique
+  cluster              ForecastCluster  @relation(fields: [clusterId], references: [id], onDelete: Cascade)
+  latestCompositeId    String?
+  compositeProbability Float?
+  confidence           SignalConfidence @default(LOW)
+  confidenceBand       ConfidenceBand   @default(NORMAL)
+  qualityScore         Float            @default(0)
+  sourceCount          Int              @default(0)
+  warningCount         Int              @default(0)
+  sourceBreakdown      Json
+  policy               Json
+  computedAt           DateTime?
+  updatedAt            DateTime         @updatedAt
 
   @@index([confidence])
-  @@index([processedAt])
+  @@index([updatedAt])
 }
 
 model SignalWarning {
-  id             String           @id @default(cuid())
-  marketId       String
-  market         NormalizedMarket @relation(fields: [marketId], references: [id], onDelete: Cascade)
-  sourcePlatform SourcePlatform
-  type           WarningType
-  message        String
-  severity       SignalConfidence
-  observedAt     DateTime         @default(now())
-  metadata       Json
+  id              String           @id @default(cuid())
+  marketId        String
+  market          NormalizedMarket @relation(fields: [marketId], references: [id], onDelete: Cascade)
+  sourcePlatform  SourcePlatform
+  type            WarningType
+  message         String
+  severity        SignalConfidence
+  observedAt      DateTime         @default(now())
+  metadata        Json
 
   @@index([marketId, observedAt])
   @@index([type])
+}
+
+model IngestionRun {
+  id                    String             @id @default(cuid())
+  startedAt             DateTime           @default(now())
+  finishedAt            DateTime?
+  status                IngestionRunStatus @default(RUNNING)
+  connectorResults      Json
+  errors                Json
+  marketsFetched        Int                @default(0)
+  marketsUpserted       Int                @default(0)
+  snapshotsWritten      Int                @default(0)
+  matchDecisionsWritten Int                @default(0)
+  compositesUpdated     Int                @default(0)
+  warningsWritten       Int                @default(0)
+  snapshots             MarketSnapshot[]
+
+  @@index([startedAt])
+  @@index([status])
+}
+
+model MatchDecision {
+  id         String           @id @default(cuid())
+  marketId   String
+  market     NormalizedMarket @relation(fields: [marketId], references: [id], onDelete: Cascade)
+  clusterId  String?
+  cluster    ForecastCluster? @relation(fields: [clusterId], references: [id], onDelete: SetNull)
+  outcome    MatchOutcome
+  method     MatchMethod
+  confidence Float
+  reason     String
+  observedAt DateTime         @default(now())
+  createdAt  DateTime         @default(now())
+
+  @@index([marketId, observedAt])
+  @@index([clusterId, observedAt])
+  @@index([outcome])
 }

@@ -1,5 +1,5 @@
 import { NextResponse } from "next/server";
-import { getForecastDetail } from "@/ensemble/serving/read-models";
+import { getForecastDetail } from "@/lib/forecast/read-models";
 
 export async function GET(_request: Request, { params }: { params: Promise<{ id: string }> }) {
   const { id } = await params;
