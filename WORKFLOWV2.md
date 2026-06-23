@@ -2,6 +2,13 @@
 
 Ensemble is a small forecast intelligence terminal. It does **not** try to show every prediction market. It fetches many markets, filters them into a small set of seed events, scores source quality, normalizes contract orientation, and writes one current forecast number per event.
 
+Current operating target:
+
+```text
+V1.3 = five-event future-news terminal with audited sources, honest movement windows,
+       source movement drivers, basic health reporting, and deterministic headline text.
+```
+
 The most important design rule is:
 
 ```text
@@ -104,6 +111,28 @@ keep market if:
 
 The precise source inclusion decision happens later, after deterministic matching and quality scoring.
 
+### Connector Reliability Rules
+
+Polymarket is a live external API, so V1.3 treats connector reliability as part of correctness.
+
+Required behavior:
+
+```text
+Gamma/public-search requests:
+  retry retryable failures with bounded backoff
+  record per-query errors in connector diagnostics
+
+CLOB quote requests:
+  fetch with bounded concurrency
+  retry retryable failures with bounded backoff
+  return null quote on final failure
+  record the failed token/market in connector diagnostics
+```
+
+The connector should not fail the entire ingestion run because one topic search or one CLOB quote fails. It should return the usable markets and expose diagnostics so the run can finish as `PARTIAL` when appropriate.
+
+Kalshi is intentionally parked in V1.3. It should not be treated as an active source until it produces useful equivalent seed-event markets or is explicitly reactivated in a later milestone.
+
 ## 2. Matching
 
 Code:
@@ -194,28 +223,30 @@ Run:
 npm run worker:ingest
 ```
 
-The ingestion worker is the main process pipeline.
+The ingestion worker is the main process pipeline. In V1.3 it should be non-destructive to the current UI cache: a failed or partial run should not blank out `ForecastCurrent` before a replacement composite has been computed.
 
 ### Full Ingestion Sequence
 
 1. Create an `IngestionRun`.
 2. Ensure the five seed clusters exist.
 3. Delete stale seed clusters that are no longer active.
-4. Clear current cluster memberships and current forecast cache.
-5. Fetch markets from enabled connectors.
-6. Normalize each source market.
-7. Match each fetched market to a seed cluster or leave it unmatched.
-8. Upsert the normalized market.
-9. Write a market snapshot.
-10. Compute and store a quality score.
-11. Detect warnings such as large moves, stale markets, or wide spreads.
-12. Store a match decision.
-13. Store `ClusterMarket` membership for matched markets.
-14. Rematch all stored open markets against current seed rules.
+4. Fetch markets from enabled connectors.
+5. Normalize each source market.
+6. Match each fetched market to a seed cluster or leave it unmatched.
+7. Upsert the normalized market.
+8. Write a market snapshot only when it adds useful history.
+9. Compute and store a quality score.
+10. Detect warnings such as large moves, stale markets, or wide spreads.
+11. Store a match decision.
+12. Store or update `ClusterMarket` membership for matched markets.
+13. Rematch all stored open markets against current seed rules.
+14. Prune obsolete memberships that no longer match current seed rules.
 15. Recompute composites for affected clusters.
-16. Write `CompositeForecast` history.
-17. Upsert `ForecastCurrent`, the fast UI cache.
+16. Write `CompositeForecast` history with the active algorithm version.
+17. Upsert `ForecastCurrent`, the fast UI cache, only after recompute succeeds.
 18. Finish the `IngestionRun` with counters and status.
+
+Do **not** clear `ForecastCurrent` at the beginning of a run. The dashboard should keep showing the last good composite while ingestion is in progress or partially failed.
 
 ### Why Rematching Exists
 
@@ -230,6 +261,46 @@ latest fetch misses a relevant source
 ```
 
 Instead, after fetching, ingestion rematches all stored open markets so the source set reflects the current seed rules, not only the latest fetch page.
+
+V1.3 rematching should be careful:
+
+```text
+rematch open markets
+  -> upsert memberships that still match
+  -> remove memberships that no longer match
+  -> leave ForecastCurrent untouched until recompute succeeds
+```
+
+This avoids two bad states:
+
+- discovery misses a live source and accidentally removes it from the composite;
+- a partial ingestion failure blanks the dashboard cache.
+
+### Snapshot Dedupe And History
+
+`MarketSnapshot` is the raw material for movement charts and source movement drivers. The app should keep enough history to explain changes without writing a duplicate row for every unchanged poll.
+
+Write a new snapshot when at least one is true:
+
+```text
+first snapshot for market
+OR previous snapshot is old enough to be useful for history
+OR probability moved meaningfully
+OR bid/ask moved meaningfully
+OR liquidity or volume changed meaningfully
+```
+
+Near-duplicate snapshots may be skipped. When skipped, `snapshotsWritten` should reflect the actual number of rows written, not just markets seen.
+
+History windows are honest:
+
+```text
+move24h = currentComposite - compositeClosestTo(now - 24h)
+move7d  = currentComposite - compositeClosestTo(now - 7d)
+move30d = currentComposite - compositeClosestTo(now - 30d)
+```
+
+If no comparable point exists at or before the target time, the movement value is `n/a`. Do not synthesize fake history for demos.
 
 ### Ingestion Counters
 
@@ -254,6 +325,8 @@ compositesUpdated = 5
 
 If `compositesUpdated < 5`, inspect which cluster has no memberships or no usable sources.
 
+Connector errors should be visible in the run status. A per-topic search failure or CLOB quote failure should be logged in connector diagnostics without necessarily failing the whole run.
+
 ## 4. Persistence Model
 
 Main database tables:
@@ -272,6 +345,28 @@ Main database tables:
 | `IngestionRun` | Run-level counters and status. |
 
 The UI should read `ForecastCurrent`. It should not recompute composites.
+
+### Algorithm Versioning
+
+Composite history must be comparable across math changes. Store the active algorithm version in two places:
+
+```text
+CompositeForecast.algorithmVersion
+ForecastCurrent.algorithmVersion
+```
+
+Also keep the version inside `sourceBreakdown` JSON for backwards-compatible audit payloads.
+
+Movement calculations should compare only compatible points:
+
+```text
+if current.algorithmVersion exists:
+  movement history = CompositeForecast rows with same algorithmVersion
+else:
+  movement history = legacy compatible rows from sourceBreakdown.algorithmVersion
+```
+
+This prevents a math-rule change from looking like a market move.
 
 ## 5. Quality Scoring
 
@@ -701,11 +796,12 @@ This is safe only when all included markets answer the same headline question.
 Code:
 
 - `ensemble/serving/read-models.ts`
+- `app/api/health/route.ts`
 - `app/page.tsx`
 - `app/forecasts/[id]/page.tsx`
 - `components/ForecastChart.tsx`
 
-The serving layer reads `ForecastCurrent` and shapes it for the UI.
+The serving layer reads `ForecastCurrent` and shapes it for the UI. It may join recent compatible `CompositeForecast` rows and source snapshots to compute movement read models, but it should not recompute the composite probability itself.
 
 The dashboard shows:
 
@@ -717,6 +813,9 @@ The dashboard shows:
 | Quality | `ForecastCurrent.qualityScore` |
 | Sources | `ForecastCurrent.sourceCount` |
 | Updated | `ForecastCurrent.computedAt` |
+| Future-news headline | deterministic headline read model |
+| Movement | derived from compatible `CompositeForecast` history |
+| Source movement drivers | derived from normalized source snapshots |
 
 The dashboard should explain the number. It should not silently hide source problems.
 
@@ -730,6 +829,121 @@ What weight did it receive?
 Were any sources excluded?
 ```
 
+### Movement Read Model
+
+Every forecast read model should expose:
+
+```ts
+movement.previousRun
+movement.sinceFirst
+movement.day
+movement.week
+movement.month
+movement.pointCount
+```
+
+Meaning:
+
+| Field | Meaning |
+| --- | --- |
+| `previousRun` | Latest compatible composite minus the immediately previous compatible composite. |
+| `sinceFirst` | Latest compatible composite minus the oldest compatible composite in the retained window. |
+| `day` | Latest compatible composite minus the closest compatible point at or before 24 hours ago. |
+| `week` | Latest compatible composite minus the closest compatible point at or before 7 days ago. |
+| `month` | Latest compatible composite minus the closest compatible point at or before 30 days ago. |
+| `pointCount` | Number of compatible composite points used. |
+
+Honest display rule:
+
+```text
+If no real comparable point exists for 24h, 7d, or 30d, show n/a.
+Use last-run and since-first as interim context, not as substitutes.
+```
+
+### Source Movement Drivers
+
+The detail page should make clear which source moved the forecast most.
+
+For each source market:
+
+```text
+normalizedSnapshotProbability =
+  requiresInversion ? 1 - rawSnapshotProbability : rawSnapshotProbability
+
+sourceMove =
+  latestNormalizedSnapshotProbability - previousNormalizedSnapshotProbability
+```
+
+Then sort source drivers by:
+
+```text
+abs(sourceMove) descending
+qualityScore descending
+liquidity descending
+```
+
+The detail page should show:
+
+- the strongest source mover;
+- each source market's movement chip;
+- whether the source is `headline`, `supporting`, or `excluded`;
+- raw probability and normalized probability;
+- source quality, liquidity, volume, orientation, and match reason.
+
+Source audit cards should sort in this order:
+
+```text
+headline sources
+supporting sources
+excluded sources
+within each group: strongest movement, then highest quality
+```
+
+### Health Endpoint
+
+The app should expose a lightweight health route:
+
+```text
+GET /api/health
+```
+
+Response shape:
+
+```ts
+{
+  status: "healthy" | "degraded" | "unhealthy",
+  latestRun: {
+    id: string,
+    status: "RUNNING" | "SUCCEEDED" | "PARTIAL" | "FAILED",
+    startedAt: string,
+    finishedAt: string | null,
+    marketsFetched: number,
+    compositesUpdated: number,
+    errors: string[]
+  } | null,
+  forecastCount: number,
+  zeroSourceForecasts: Array<{ slug: string, title: string }>,
+  latestComputedAt: string | null,
+  errors: string[]
+}
+```
+
+Status rules:
+
+```text
+healthy   = latest run succeeded, five forecasts exist, no zero-source forecasts
+degraded  = latest run partial OR any forecast has zero headline sources
+unhealthy = latest run failed OR no latest run OR no current forecasts
+```
+
+The dashboard should include a compact status card/banner based on the same data:
+
+- latest run status;
+- last ingestion time;
+- forecast count;
+- zero-source warning if any;
+- connector errors if present.
+
 ## 9. Human QA Process
 
 After backend changes, do not stop at tests. Run and inspect the real app.
@@ -741,14 +955,35 @@ docker compose up -d
 npm run prisma:generate
 npm run prisma:seed
 npm run worker:ingest
+npm run audit:forecasts
 npm run dev
 ```
+
+For a clean local bootstrap, use:
+
+```bash
+npm run bootstrap:dev
+```
+
+`bootstrap:dev` should perform the local sequence needed for a trustworthy run:
+
+```text
+generate Prisma client
+seed five active clusters
+run ingestion
+run forecast audit
+print health summary
+```
+
+It should be safe to run repeatedly in development.
 
 Verification commands:
 
 ```bash
 npm test
 npm run typecheck
+npm run audit:forecasts
+curl http://localhost:3000/api/health
 curl -I http://localhost:3000
 ```
 
@@ -815,6 +1050,9 @@ For each of the five events, ask:
 5. Is the source count nonzero?
 6. Is the composite plausible relative to included source prices?
 7. Are there noisy sources from another topic, threshold, date, or category?
+8. Do source links open the exact source market, not only the parent event?
+9. Does the detail page show the strongest source mover?
+10. Are 24h/7d/30d movement values real or honestly shown as `n/a`?
 
 If any answer is bad, fix matching rules or composite rules, rerun ingestion, and inspect again.
 
@@ -839,6 +1077,10 @@ Bad signs:
 - Fed headline averages no-cut binary with low-liquidity ladder buckets.
 - Presidential row shows `100%` because `No` outcomes were treated as candidates.
 - Category inference classifies `Netherlands` as crypto due to the substring `eth`.
+- 24h, 7d, or 30d movement appears even though no comparable old point exists.
+- Supporting source markets appear above headline sources in the detail audit.
+- A failed connector query is invisible in run diagnostics.
+- A partial run clears the dashboard's current forecast cache.
 
 ## 11. Development Rules
 
@@ -856,16 +1098,41 @@ Recommended verification loop:
 ```bash
 npm test -- tests/unit/composite.test.ts tests/unit/matching.test.ts tests/unit/cluster-coverage.test.ts tests/unit/polymarket.test.ts
 npm run worker:ingest
+npm run audit:forecasts
 npm test
 npm run typecheck
+curl http://localhost:3000/api/health
 curl -I http://localhost:3000
 ```
+
+Rendered QA loop:
+
+```bash
+npm run dev
+npx playwright screenshot --full-page http://localhost:3000 /tmp/ensemble-dashboard.png
+npx playwright screenshot --viewport-size=390,900 http://localhost:3000 /tmp/ensemble-dashboard-mobile.png
+npx playwright screenshot http://localhost:3000/forecasts/fed-rate-path /tmp/ensemble-fed-detail.png
+npx playwright screenshot http://localhost:3000/forecasts/us-presidential-2028 /tmp/ensemble-presidential-detail.png
+```
+
+Check the screenshots for:
+
+- exactly five dashboard rows;
+- nonzero source counts;
+- readable graph and labels;
+- exact source market links;
+- `30d` movement field;
+- top source mover;
+- headline/supporting/excluded source ordering;
+- no overlapping text on mobile.
 
 The final answer should report:
 
 - Which events have sources.
 - Source count per event.
 - Composite percentage per event.
+- Movement state, including whether 24h/7d/30d are real or `n/a`.
+- Strongest source mover when available.
 - Any source families rejected as noise.
 - Test and typecheck results.
 
@@ -878,7 +1145,6 @@ These are intentionally not active yet:
 - LLM synthesis.
 - Semantic embedding matching.
 - Warning-based source filtering.
-- 24-hour move calculations.
 - Kalshi production ingestion.
 
 The schema keeps embedding fields and semantic boundaries so these can be added later, but the current MVP should remain deterministic and auditable.
