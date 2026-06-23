@@ -4,6 +4,8 @@ import { seedClusters } from "@/ensemble/config/clusters";
 const prisma = new PrismaClient();
 
 async function main() {
+  const activeSlugs = seedClusters.map((cluster) => cluster.slug);
+  await prisma.forecastCluster.deleteMany({ where: { slug: { notIn: activeSlugs } } });
   for (const cluster of seedClusters) {
     await prisma.forecastCluster.upsert({
       where: { slug: cluster.slug },

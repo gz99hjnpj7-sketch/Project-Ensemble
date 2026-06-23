@@ -26,6 +26,32 @@ describe("matchDeterministically", () => {
     if (result.kind === "matched") expect(result.clusterId).toBe("fed");
   });
 
+  it("marks known inverse matches with requiresInversion metadata", () => {
+    const result = matchDeterministically({ question: "Will no Fed rate cuts happen in 2026?", eventTitle: "Fed cuts", sourceSlug: null, category: ForecastCategory.MACRO }, clusters);
+    expect(result.kind).toBe("matched");
+    if (result.kind === "matched") expect(result.requiresInversion).toBe(true);
+  });
+
+  it("leaves direct-side matches non-inverted", () => {
+    const result = matchDeterministically({ question: "Will there be at least one Fed rate cut in 2026?", eventTitle: "Fed cuts", sourceSlug: null, category: ForecastCategory.MACRO }, clusters);
+    expect(result.kind).toBe("matched");
+    if (result.kind === "matched") expect(result.requiresInversion).toBe(false);
+  });
+
+  it("matches Fed cut ladder outcomes into the Fed rate path cluster", () => {
+    const result = matchDeterministically(
+      {
+        question: "Will 6 Fed rate cuts happen in 2026?",
+        eventTitle: "How many Fed rate cuts in 2026?",
+        sourceSlug: "will-6-fed-rate-cuts-happen-in-2026",
+        category: ForecastCategory.MACRO
+      },
+      clusters
+    );
+    expect(result.kind).toBe("matched");
+    if (result.kind === "matched") expect(result.clusterId).toBe("fed");
+  });
+
   it("does not use generic title words to create accidental matches", () => {
     const result = matchDeterministically({ question: "Will robotaxis launch in Austin before July?", eventTitle: "Autonomous Vehicles", sourceSlug: null, category: ForecastCategory.OTHER }, clusters);
     expect(result.kind).toBe("unmatched");
@@ -44,10 +70,36 @@ describe("matchDeterministically", () => {
     expect(result.kind).toBe("unmatched");
   });
 
-  it("keeps Senate markets out of the House-focused midterms cluster", () => {
+  it("keeps standalone Senate control out of the House-control midterms cluster", () => {
     const result = matchDeterministically(
       { question: "Will the Republican Party control the Senate after the 2026 Midterm elections?", eventTitle: "US Senate Control", sourceSlug: null, category: ForecastCategory.POLITICS },
-      [{ id: "house", slug: "us-2026-midterms", category: ForecastCategory.POLITICS, title: "US 2026 House Control", description: "House control" }]
+      [{ id: "midterms", slug: "us-2026-midterms", category: ForecastCategory.POLITICS, title: "US 2026 Midterms", description: "Congress control" }]
+    );
+    expect(result.kind).toBe("unmatched");
+  });
+
+  it("matches Democratic-House balance-of-power outcomes into the 2026 midterms cluster", () => {
+    const result = matchDeterministically(
+      {
+        question: "2026 Balance of Power: R Senate, D House",
+        eventTitle: "Balance of Power: 2026 Midterms",
+        sourceSlug: "balance-of-power-2026-midterms-r-senate-d-house",
+        category: ForecastCategory.POLITICS
+      },
+      [{ id: "midterms", slug: "us-2026-midterms", category: ForecastCategory.POLITICS, title: "US 2026 Midterms", description: "Congress control" }]
+    );
+    expect(result.kind).toBe("matched");
+  });
+
+  it("keeps exact Senate-seat markets out of the broad midterms cluster", () => {
+    const result = matchDeterministically(
+      {
+        question: "Will the Republican Party hold exactly 54 Senate seats after the 2026 midterm elections?",
+        eventTitle: "Republican Senate seats after the 2026 midterm elections",
+        sourceSlug: null,
+        category: ForecastCategory.POLITICS
+      },
+      [{ id: "midterms", slug: "us-2026-midterms", category: ForecastCategory.POLITICS, title: "US 2026 Midterms", description: "Congress control" }]
     );
     expect(result.kind).toBe("unmatched");
   });

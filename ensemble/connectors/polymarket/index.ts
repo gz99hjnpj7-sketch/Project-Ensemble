@@ -1,16 +1,32 @@
 import { SourcePlatform } from "@prisma/client";
 import type { MarketConnector, NormalizedMarketInput } from "@/ensemble/connectors/types";
 import { PolymarketClient, type GammaMarket } from "./client";
-import { getPrimaryTokenId, inferCategory, midpointFromBidAsk, normalizePolymarketMarket, parseJsonArray } from "./normalize";
+import { buildPolymarketSourceUrl, getPrimaryTokenId, inferCategory, midpointFromBidAsk, normalizePolymarketMarket, parseJsonArray } from "./normalize";
 
-const TOPIC_SEARCHES = ["fed", "rate cut", "fomc", "inflation", "cpi", "recession", "unemployment", "senate", "house majority", "congress control", "nomination", "greenland"];
+const TOPIC_SEARCHES = [
+  "fed",
+  "fed rate cuts 2026",
+  "how many fed rate cuts in 2026",
+  "2026 midterms",
+  "balance of power 2026 midterms",
+  "house control 2026",
+  "presidential election winner 2028",
+  "bitcoin reach 100000 2026",
+  "openai release frontier model september 30 2026"
+];
 
 export class PolymarketConnector implements MarketConnector {
   sourcePlatform = SourcePlatform.POLYMARKET;
   private client = new PolymarketClient();
   private minLiquidity = Number(process.env.MIN_LIQUIDITY ?? 500);
+  private diagnostics: { errors: string[] } = { errors: [] };
+
+  getDiagnostics() {
+    return this.diagnostics;
+  }
 
   async fetchMarkets(now = new Date()): Promise<NormalizedMarketInput[]> {
+    this.diagnostics = { errors: [] };
     const [byVolume, byLiquidity, unsorted] = await Promise.all([
       this.client.fetchGammaMarkets("volumeNum"),
       this.client.fetchGammaMarkets("liquidityNum"),
@@ -19,8 +35,11 @@ export class PolymarketConnector implements MarketConnector {
     const all = [...byVolume, ...byLiquidity, ...unsorted];
     for (const term of TOPIC_SEARCHES) {
       try {
-        all.push(...await this.client.fetchGammaMarkets("volumeNum", term));
-      } catch {}
+        all.push(...await this.client.publicSearchMarkets(term));
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        this.diagnostics.errors.push(`topic search "${term}": ${message}`);
+      }
     }
     const unique = dedupeBySourceId(all).filter((market) => this.isWorthNormalizing(market));
     const normalized = await Promise.all(unique.map(async (market) => {
@@ -56,4 +75,4 @@ function toNumber(value: unknown): number | null {
   return Number.isFinite(parsed) ? parsed : null;
 }
 
-export const polymarketTestInternals = { parseJsonArray, midpointFromBidAsk, inferCategory };
+export const polymarketTestInternals = { parseJsonArray, midpointFromBidAsk, inferCategory, buildPolymarketSourceUrl };

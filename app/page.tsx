@@ -15,15 +15,13 @@ export default async function Home({ searchParams }: { searchParams: SearchParam
   return (
     <main className="shell">
       <header className="topbar">
-        <div className="brand"><h1>Ensemble</h1><span>Collect - Match - Combine - Serve</span></div>
-        <span className="muted">Last run {summary.lastRun ? `${summary.lastRun.status} ${formatTimestamp(summary.lastRun.startedAt)}` : "not started"}</span>
+        <div className="brand">
+          <h1>Ensemble</h1>
+          <span>Forecast intelligence terminal</span>
+        </div>
+        <span className="muted">{summary.lastRun ? formatTimestamp(summary.lastRun.startedAt) : "No run yet"}</span>
       </header>
       <section className="terminal">
-        <div className="metricRow">
-          <span className="pill">Forecasts {summary.forecastCount}</span>
-          <span className="pill">Clustered markets {summary.clusteredMarketCount}</span>
-          <span className="pill">Unclustered markets {summary.unclusteredMarketCount}</span>
-        </div>
         <form className="toolbar">
           <div style={{ position: "relative" }}>
             <Search size={16} style={{ position: "absolute", left: 12, top: 12, color: "var(--muted)" }} />
@@ -37,22 +35,27 @@ export default async function Home({ searchParams }: { searchParams: SearchParam
           </select>
         </form>
         {forecasts.length ? (
-          <div className="tableWrap"><table><thead><tr><th>Event</th><th>Composite</th><th>Confidence</th><th>Quality</th><th>Sources</th><th>Updated</th></tr></thead><tbody>
+          <div className="tableWrap"><table><thead><tr><th>Event</th><th>Composite</th><th>Movement</th><th>Confidence</th><th>Quality</th><th>Headline sources</th><th>Updated</th></tr></thead><tbody>
             {forecasts.map((forecast) => <tr key={forecast.id}>
               <td>
                 <div className="eventCell">
                   <Link href={`/forecasts/${forecast.slug}`}><span className="eventTitle">{forecast.title}</span></Link>
-                  <span className="muted">{forecast.category} / {forecast.marketCount} included sources</span>
+                  <span className="muted">{forecast.category} / {forecast.description}</span>
+                  <span className="futureHeadline">{forecast.futureNews.headline}</span>
                   <details className="sourceDetails">
                     <summary>What this number means</summary>
-                    <SourceBreakdown sources={forecast.sources} policy={forecast.policy} />
+                    <SourceBreakdown sources={forecast.sources} policy={forecast.policy} outcomeBreakdown={forecast.outcomeBreakdown} />
                   </details>
                 </div>
               </td>
-              <td className="prob">{formatProbability(forecast.compositeProbability)}</td>
+              <td>
+                <div className="prob">{formatProbability(forecast.compositeProbability)}</div>
+                {forecast.outcomeBreakdown?.[0] ? <div className="muted" style={{ fontSize: 12 }}>{forecast.outcomeBreakdown[0].name} lead</div> : null}
+              </td>
+              <td className="movementCell"><MovementSummary movement={forecast.movement} /></td>
               <td><span className={`pill ${forecast.confidence.toLowerCase()}`}>{forecast.confidence}</span></td>
               <td><span className="pill">Q{forecast.qualityScore}</span></td>
-              <td><span className="pill">{forecast.marketCount} included</span></td>
+              <td><span className="pill">{forecast.marketCount} headline</span></td>
               <td className="muted">{formatTimestamp(forecast.computedAt)}</td>
             </tr>)}
           </tbody></table></div>
@@ -64,22 +67,50 @@ export default async function Home({ searchParams }: { searchParams: SearchParam
 
 function getParam(value: string | string[] | undefined): string | undefined { return Array.isArray(value) ? value[0] : value; }
 function formatProbability(value: number | null): string { return value === null ? "n/a" : `${Math.round(value * 100)}%`; }
-function SourceBreakdown({ sources, policy }: { sources: any[]; policy: any | null }) {
+function formatPoints(value: number | null | undefined): string {
+  if (typeof value !== "number") return "n/a";
+  const points = value * 100;
+  const sign = points > 0 ? "+" : "";
+  return `${sign}${points.toFixed(Math.abs(points) < 1 ? 1 : 0)} pts`;
+}
+function movementClass(value: number | null | undefined): string {
+  if (typeof value !== "number" || Math.abs(value) < 0.0005) return "muted";
+  return value > 0 ? "moveUp" : "moveDown";
+}
+function MovementSummary({ movement }: { movement: any }) {
+  const primary = movement?.day ?? movement?.sinceFirst ?? movement?.previousRun ?? null;
+  const label = movement?.day ? "24h" : movement?.sinceFirst ? "since first" : movement?.previousRun ? "last run" : "history";
+  return (
+    <div>
+      <div className={movementClass(primary?.probability)}>{primary ? formatPoints(primary.probability) : "not enough history"}</div>
+      <div className="muted movementMeta">{label}{movement?.pointCount ? ` · ${movement.pointCount} runs` : ""}</div>
+    </div>
+  );
+}
+function SourceBreakdown({ sources, policy, outcomeBreakdown }: { sources: any[]; policy: any | null; outcomeBreakdown: any[] | null }) {
   const included = sources.filter((source) => source.included).sort((a, b) => (b.probability ?? 0) - (a.probability ?? 0));
+  const supporting = sources.filter((source) => source.sourceRole === "supporting").sort((a, b) => (b.probability ?? 0) - (a.probability ?? 0));
   if (!included.length) return <p className="muted">No usable source markets yet. Run ingestion and check that a seed cluster has matching markets.</p>;
   return (
     <div className="sourceList">
       {included.slice(0, 6).map((source) => (
         <div className="sourceRow" key={source.marketId}>
-          <div>
-            <div className="sourceTitle">{source.displayQuestion ?? source.question}</div>
-            <div className="muted">{source.sourcePlatform}</div>
-          </div>
-          <span>{formatProbability(source.probability)} · Quality {source.qualityScore} · weight {formatWeight(source.weight)}</span>
+          <div className="sourceTitle">{source.displayQuestion ?? source.question}</div>
+          <span>{formatProbability(source.probability)} · Quality {source.qualityScore} · headline weight {formatWeight(source.weight)}{source.sourceUrl ? <> · <a className="sourceLink" href={source.sourceUrl} target="_blank" rel="noreferrer">Source</a></> : null}</span>
         </div>
       ))}
+      {supporting.length ? <p className="muted">{supporting.length} supporting markets kept for audit/detail context but not averaged into the headline.</p> : null}
+      {outcomeBreakdown?.length ? <OutcomeBreakdown outcomes={outcomeBreakdown} /> : null}
       {policy?.excludedSources?.length ? <p className="muted">{policy.excludedSources.length} source markets were left out because they were closed, missing a price, or too low quality.</p> : null}
     </div>
   );
 }
 function formatWeight(value: number | null | undefined): string { return typeof value === "number" ? value.toFixed(2) : "n/a"; }
+
+function OutcomeBreakdown({ outcomes }: { outcomes: any[] }) {
+  return (
+    <div className="metricRow">
+      {outcomes.slice(0, 3).map((outcome) => <span className="pill" key={outcome.name}>{outcome.name} {formatProbability(outcome.probability)}</span>)}
+    </div>
+  );
+}

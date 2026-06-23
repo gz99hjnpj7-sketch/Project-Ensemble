@@ -13,4 +13,13 @@ describe("Polymarket helpers", () => {
   it("infers macro category from Fed market metadata", () => {
     expect(polymarketTestInternals.inferCategory(gammaMarketFixture)).toBe(ForecastCategory.MACRO);
   });
+  it("does not classify Netherlands text as crypto from the eth substring", () => {
+    expect(polymarketTestInternals.inferCategory({ question: "Will Netherlands win the 2026 FIFA World Cup?", slug: "will-netherlands-win-world-cup" })).not.toBe(ForecastCategory.CRYPTO);
+  });
+  it("builds grouped-event URLs that preserve the exact child market slug", () => {
+    expect(polymarketTestInternals.buildPolymarketSourceUrl({
+      slug: "will-10-fed-rate-cuts-happen-in-2026",
+      events: [{ slug: "how-many-fed-rate-cuts-in-2026", title: "How many Fed rate cuts in 2026?" }]
+    })).toBe("https://polymarket.com/event/how-many-fed-rate-cuts-in-2026#will-10-fed-rate-cuts-happen-in-2026");
+  });
 });

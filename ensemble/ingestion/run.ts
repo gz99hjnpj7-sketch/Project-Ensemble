@@ -1,10 +1,11 @@
-import { IngestionRunStatus, type PrismaClient } from "@prisma/client";
+import { IngestionRunStatus, MatchOutcome, ResolutionStatus, type PrismaClient } from "@prisma/client";
 import { seedClusters } from "@/ensemble/config/clusters";
 import { recomputeClusterForecast, recomputeClusterForecasts } from "@/ensemble/composite/persist";
 import { getEnabledConnectors } from "@/ensemble/connectors/registry";
 import type { MarketConnector } from "@/ensemble/connectors/types";
 import { prisma as defaultPrisma } from "@/ensemble/db/prisma";
 import { matchDeterministically } from "@/ensemble/matching/deterministic";
+import { toPrismaMatchMethod } from "@/ensemble/matching/types";
 import { createIngestionRun, finishIngestionRun, type IngestionCounters } from "./ingestion-run-log";
 import { persistMarketObservation } from "./persist";
 
@@ -24,7 +25,9 @@ export async function runIngestion(options: { prisma?: PrismaClient; connectors?
     for (const connector of connectors) {
       try {
         const markets = await connector.fetchMarkets(now);
-        counters.connectorResults.push({ sourcePlatform: connector.sourcePlatform, fetched: markets.length, errors: [] });
+        const diagnostics = connector.getDiagnostics?.() ?? { errors: [] };
+        counters.connectorResults.push({ sourcePlatform: connector.sourcePlatform, fetched: markets.length, errors: diagnostics.errors });
+        counters.errors.push(...diagnostics.errors.map((error) => `${connector.sourcePlatform}: ${error}`));
         counters.marketsFetched += markets.length;
         for (const market of markets) {
           const match = matchDeterministically(market as any, clusters);
@@ -41,6 +44,9 @@ export async function runIngestion(options: { prisma?: PrismaClient; connectors?
         counters.errors.push(`${connector.sourcePlatform}: ${message}`);
       }
     }
+    const rematch = await rebuildClusterMemberships(db, clusters, run.id, now);
+    counters.matchDecisionsWritten += rematch.matchDecisionsWritten;
+    for (const clusterId of rematch.affectedClusterIds) affectedClusterIds.add(clusterId);
     for (const clusterId of affectedClusterIds) {
       if (await recomputeClusterForecast(db, clusterId)) counters.compositesUpdated += 1;
     }
@@ -66,4 +72,35 @@ async function seedForecastClusters(db: PrismaClient): Promise<void> {
 async function resetSeedClusterOutputs(db: PrismaClient): Promise<void> {
   await db.forecastCurrent.deleteMany();
   await db.clusterMarket.deleteMany();
+}
+
+async function rebuildClusterMemberships(db: PrismaClient, clusters: Awaited<ReturnType<PrismaClient["forecastCluster"]["findMany"]>>, runId: string, now: Date) {
+  await db.clusterMarket.deleteMany();
+  const affectedClusterIds = new Set<string>();
+  let matchDecisionsWritten = 0;
+  const markets = await db.normalizedMarket.findMany({ where: { resolutionStatus: ResolutionStatus.OPEN } });
+  for (const market of markets) {
+    const match = matchDeterministically(market, clusters);
+    await db.matchDecision.create({
+      data: {
+        marketId: market.id,
+        clusterId: match.kind === "matched" ? match.clusterId : null,
+        outcome: match.kind === "matched" ? MatchOutcome.MATCHED : MatchOutcome.UNMATCHED,
+        method: toPrismaMatchMethod(match.method),
+        confidence: match.confidence,
+        reason: `${match.reason} / rematched after ingestion ${runId}`,
+        observedAt: now
+      }
+    });
+    matchDecisionsWritten += 1;
+    if (match.kind === "matched") {
+      affectedClusterIds.add(match.clusterId);
+      await db.clusterMarket.upsert({
+        where: { clusterId_marketId: { clusterId: match.clusterId, marketId: market.id } },
+        create: { clusterId: match.clusterId, marketId: market.id, sourcePlatform: market.sourcePlatform, relationship: match.method, requiresInversion: match.requiresInversion ?? false },
+        update: { sourcePlatform: market.sourcePlatform, relationship: match.method, requiresInversion: match.requiresInversion ?? false }
+      });
+    }
+  }
+  return { affectedClusterIds, matchDecisionsWritten };
 }

@@ -158,6 +158,7 @@ model ClusterMarket {
   sourcePlatform  SourcePlatform
   relationship    String           @default("primary")
   weightOverride  Float?
+  requiresInversion Boolean         @default(false)
   createdAt       DateTime         @default(now())
 
   @@unique([clusterId, marketId])

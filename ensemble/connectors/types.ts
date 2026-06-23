@@ -30,4 +30,5 @@ export type NormalizedMarketInput = {
 export type MarketConnector = {
   sourcePlatform: SourcePlatform;
   fetchMarkets(now?: Date): Promise<NormalizedMarketInput[]>;
+  getDiagnostics?(): { errors: string[] };
 };

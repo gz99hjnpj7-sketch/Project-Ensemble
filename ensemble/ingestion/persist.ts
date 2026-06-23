@@ -24,7 +24,11 @@ export async function persistMarketObservation(db: PrismaClient, input: Normaliz
   }
   await db.matchDecision.create({ data: { marketId: market.id, clusterId: match.kind === "matched" ? match.clusterId : null, outcome: match.kind === "matched" ? MatchOutcome.MATCHED : MatchOutcome.UNMATCHED, method: toPrismaMatchMethod(match.method), confidence: match.confidence, reason: match.reason, observedAt: now } });
   if (match.kind === "matched") {
-    await db.clusterMarket.upsert({ where: { clusterId_marketId: { clusterId: match.clusterId, marketId: market.id } }, create: { clusterId: match.clusterId, marketId: market.id, sourcePlatform: input.sourcePlatform, relationship: match.method }, update: { sourcePlatform: input.sourcePlatform, relationship: match.method } });
+    await db.clusterMarket.upsert({
+      where: { clusterId_marketId: { clusterId: match.clusterId, marketId: market.id } },
+      create: { clusterId: match.clusterId, marketId: market.id, sourcePlatform: input.sourcePlatform, relationship: match.method, requiresInversion: match.requiresInversion ?? false },
+      update: { sourcePlatform: input.sourcePlatform, relationship: match.method, requiresInversion: match.requiresInversion ?? false }
+    });
   }
   return { marketId: market.id, matchedClusterId: match.kind === "matched" ? match.clusterId : null, warningCount: warnings.length };
 }

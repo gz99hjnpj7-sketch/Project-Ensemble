@@ -42,7 +42,7 @@ export function normalizePolymarketMarket(market: GammaMarket, options: { clobQu
     participantCount: null,
     closeTime: parseDate(market.endDateIso ?? market.endDate),
     resolutionStatus: inferResolutionStatus(market),
-    sourceUrl: market.slug ? `https://polymarket.com/event/${market.slug}` : null,
+    sourceUrl: buildPolymarketSourceUrl(market),
     lastUpdated: parseDate(market.updatedAt) ?? options.observedAt,
     observedAt: options.observedAt,
     rawPayload: { gamma: market, clobQuote: options.clobQuote ?? null }
@@ -58,6 +58,13 @@ export function parseJsonArray<T>(value: unknown): T[] {
   } catch {
     return [];
   }
+}
+
+export function buildPolymarketSourceUrl(market: Pick<GammaMarket, "slug" | "events">): string | null {
+  if (!market.slug) return null;
+  const eventSlug = market.events?.[0]?.slug;
+  if (!eventSlug || eventSlug === market.slug) return `https://polymarket.com/event/${market.slug}`;
+  return `https://polymarket.com/event/${eventSlug}#${market.slug}`;
 }
 
 export function midpointFromBidAsk(bid: number | null, ask: number | null): number | null {
@@ -92,7 +99,7 @@ export function inferCategory(market: GammaMarket): ForecastCategory {
   ].join(" ").toLowerCase();
   if (/(fed|rate|inflation|cpi|gdp|recession|jobs|unemployment|macro|economy)/.test(haystack)) return ForecastCategory.MACRO;
   if (/(election|president|senate|house|trump|biden|congress|politics|primary)/.test(haystack)) return ForecastCategory.POLITICS;
-  if (/(bitcoin|ethereum|crypto|btc|eth|solana)/.test(haystack)) return ForecastCategory.CRYPTO;
+  if (/\b(bitcoin|ethereum|crypto|btc|eth|solana)\b/.test(haystack)) return ForecastCategory.CRYPTO;
   if (/(war|ceasefire|country|minister|nato|world)/.test(haystack)) return ForecastCategory.WORLD;
   return ForecastCategory.OTHER;
 }

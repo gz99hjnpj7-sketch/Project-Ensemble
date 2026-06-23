@@ -12,6 +12,7 @@
     "test:watch": "vitest",
     "worker:ingest": "tsx worker/ingest.ts",
     "worker:schedule": "tsx worker/schedule.ts",
+    "audit:forecasts": "tsx scripts/audit-forecasts.ts",
     "prisma:generate": "prisma generate",
     "prisma:migrate": "prisma migrate dev",
     "prisma:seed": "tsx prisma/seed.ts",
